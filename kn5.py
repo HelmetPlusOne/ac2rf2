@@ -277,17 +277,17 @@ class KN5:
         if n.type == 1:
             n.matrix = r.vec(16)
         elif n.type in (2, 3):
+            n.cast_shadows = r.u8()
+            n.visible = r.u8()
+            n.transparent = r.u8()
             if n.type == 3:
-                # skinned: bone table then per bone matrices
+                # skinned: bone table (name + bind matrix) comes after the flags
                 bones = r.u32()
                 for _ in range(bones):
                     r.string()
                     r.vec(16)
-            n.cast_shadows = r.u8()
-            n.visible = r.u8()
-            n.transparent = r.u8()
             n.vertex_count = r.u32()
-            # position 3f, normal 3f, uv 2f, tangent 3f
+            # position 3f, normal 3f, uv 2f, tangent 3f (+ 4f weights, 4f indices for skinned)
             stride = 44 if n.type == 2 else 76
             vp = r.p
             r.skip(n.vertex_count * stride)
@@ -300,9 +300,15 @@ class KN5:
             n.layer = r.u32()
             n.lod_in = r.f32()
             n.lod_out = r.f32()
-            n.center = r.vec(3)
-            n.radius = r.f32()
-            n.renderable = r.u8()
+            if n.type == 2:
+                n.center = r.vec(3)
+                n.radius = r.f32()
+                n.renderable = r.u8()
+            else:
+                # Skinned mesh nodes end after lod_out (no bounding sphere or renderable byte).
+                n.center = (0.0, 0.0, 0.0)
+                n.radius = 0.0
+                n.renderable = 1
         else:
             raise ValueError('unknown node type %d at %s' % (n.type, n.name))
         for _ in range(child_count):
