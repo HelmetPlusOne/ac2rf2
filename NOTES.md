@@ -1223,3 +1223,33 @@ combinations, 842 kn5 files), not only on the seven built so far.
   exported alpha-tested fence shares `fence2_tile` with those blended rows and
   gets the plain shader selected from the first row. This is separate from the
   header fix and remains an unverified material-variant issue.
+
+## 2026-11-22: MAS and RFCMP component packaging automation
+- Disassembled `MAS2.exe` (PE x64, 2.9.4.0): confirmed zero command-line switches
+  exist for headless packaging or archive generation. Disassembled `ModMgr.exe`:
+  `ModMgr.exe -m "<dir>\*.*"` headlessly compiles MAS archives. `ModMgr.exe -b`
+  fails headlessly due to an internal GUI inventory requirement (`0x20c930`).
+- Disassembled `MASCompiler.exe` (by Noel Hibbard) and its embedded `cmppack.exe`:
+  identified why both fail on modern 64-bit Windows 10/11:
+  1. Hardcoded 32-bit path (`Bin32\ModMgr.exe`). Resolved by creating junction
+     `Bin32 -> Bin64`.
+  2. WinForms / UIA Z-order bug: Windows injects a top-level overlay window
+     `UAC_InputIndicatorOverlayWnd`. `TreeWalker.GetFirstChild` by PID returns this
+     dummy overlay instead of the MFC main window, throwing `NullReferenceException`.
+  3. Common Controls 6 / UIA incompatibility: 64-bit `ToolbarWindow32` does not
+     expose buttons as child elements to standard UIA `FindFirst` without MSAA.
+- Implemented standalone CLI packaging pipeline `package_rfcmp.py`:
+  1. Headlessly packages `<track>_assets.mas`, `<track>_materials.mas` (if present),
+     and `<track>_layout.mas` using `ModMgr.exe -m`.
+  2. Discovered MAS2 crash `0xc0000005` at `0x220cbf`: caused by `cmpinfo.dat`
+     containing `\r\r\n` (CR CR LF) when written with default text translation.
+     Writing in binary mode with strict `\r\n` prevents MAS2 string buffer overflow.
+  3. Automates `MAS2.exe` via direct Win32 messages: sends `WM_LBUTTONDOWN`/`UP`
+     to button index 6 (`cx=132, cy=11`) on `ToolbarWindow32` to open dialog 173,
+     `BM_CLICK` to control ID 1109 (Create Single Cmp Package) to open dialog 170,
+     and `BM_CLICK` to control ID 1056 (Package).
+  4. Monitors static status control ID 1120 for completion message:
+     `"Component packaging complete with no errors"`.
+  5. Tested on `out\targa_tas_21_s1_high_plains`: successfully generated
+     `Targa_Tas_21_Leg_1_TS01_High_Plains_v1.0.rfcmp` (185,523,699 bytes),
+     and verified installation into rF2's `Installed\Locations\`.

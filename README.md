@@ -196,22 +196,21 @@ reconvert before packaging.
 Normal rF2 (and online servers) only load tracks that are packed into `.mas`
 archives inside an installed `.rfcmp` package.
 
-**Why the converter doesn't do this:** rF2's `ModMgr.exe` has command-line
-options for building MAS files and packages, but in the current build the MAS
-creation option exits without writing anything, so the later steps can't run
-either. The MAS format is encrypted and its files are signed, so writing one
-from scratch isn't practical. That leaves rF2's own GUI tool, done by hand.
+`build_track.py` automates this packaging by default at the end of the build
+(or via `package_rfcmp.py`). It compiles the MAS archives headlessly and
+automates `MAS2.exe` to build the final `.rfcmp` component package directly into
+the `out\<track>\rf2\<track>\` directory. To skip packaging, pass `--no-package`
+(or `--skip-package`).
 
-It takes about 5–10 minutes per track, in `rFactor 2\Support\Tools\MAS2.exe`:
+If you ever need to package manually in `rFactor 2\Support\Tools\MAS2.exe`:
 
-1. **Create three MAS files.** Drag files from
-   `ModDev\Locations\<track>\` into MAS2 and save each set as its own MAS:
+1. **Create MAS files.** Drag files into MAS2 and save:
    - `<track>_assets.mas`: everything in `Assets\GMTs` and `Assets\MAPs`, plus `<track>.tdf`
-   - `<track>_materials.mas`: everything in `Assets\Materials`
-   - `<track>_layout.mas`: everything in the inner `<track>\` folder (`.scn`, `.gdb`, `.aiw`, `.cam` and the rest)
+   - `<track>_materials.mas`: everything in `Assets\Materials` (if present)
+   - `<track>_layout.mas`: everything in the inner layout folder (`.scn`, `.gdb`, `.aiw`, `.cam` and the rest)
 2. **Package.** Click **Package** → **Create Single Cmp Package** →
    `<Add New Component>`. Name it after the track, set the type to
-   **Location** and the version to `1.0`, then add the three MAS files and click
+   **Location** and the version to `1.0`, then add the MAS files and click
    **Package**. This writes `<track>.rfcmp`.
 3. **Install.** Click **Install** (or open the `.rfcmp` with `Bin64\ModMgr.exe`).
    The track now shows up in normal rFactor 2.
@@ -235,9 +234,11 @@ for screenshots of these dialogs.
 | 5 | `make_cam.py` | Builds TV cameras from AC's camera sets |
 | 6 | `blender_stage.py` | Builds the meshes and materials in Blender and exports `.gmt` through the rF2 add-on (with `backdrop.py`) |
 | 7 | `finalize_track.py` | Writes the scene (`.scn`), track database (`.gdb`) and terrain (`.tdf`), then installs |
+| 8 | `package_rfcmp.py` | Packages into MAS archives (`_assets.mas`, `_layout.mas`) and builds `.rfcmp` via MAS2 automation (default, opt-out with `--no-package`) |
 
 Other files:
 
+- `package_rfcmp.py`: packages a converted track folder into MAS files and an RFCMP component using ModMgr and MAS2 automation
 - `check_setup.py`: checks that everything a conversion needs is installed (run first by every build)
 - `track_zip.py`: finds the track in a downloaded `.zip` and extracts it into `out\_zips\`
 - `kn5.py`: reader for AC's kn5 model format

@@ -25,8 +25,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BLENDER = r"D:\Apps\Blender\blender.exe"
 
 
+TOTAL_STEPS = 8
+
+
 def step(n, title):
-    print("\n[%d/7] %s" % (n, title))
+    print("\n[%d/%d] %s" % (n, TOTAL_STEPS, title))
     sys.stdout.flush()
 
 
@@ -209,7 +212,13 @@ def main():
                     help="the rFactor 2 folder, if Steam does not list it")
     ap.add_argument("--ac", default=None,
                     help="the assettocorsa folder, if Steam does not list it")
+    ap.add_argument("--package", dest="package", action="store_true", default=True,
+                    help="package the converted track into MAS archives and an RFCMP component (default)")
+    ap.add_argument("--no-package", "--skip-package", dest="package", action="store_false",
+                    help="skip packaging into MAS archives and RFCMP")
     args = ap.parse_args()
+    global TOTAL_STEPS
+    TOTAL_STEPS = 8 if args.package else 7
     # Every step is a process of its own that finds the games through
     # steam_paths, which reads these, so they are set before anything imports it.
     if args.rf2:
@@ -304,6 +313,12 @@ def main():
         for f in os.listdir(lay) if os.path.isdir(lay) else []:
             if f.lower().endswith((".cbash", ".rrshd")):
                 os.remove(os.path.join(lay, f))
+    if args.package:
+        step(8, "package into MAS and RFCMP")
+        import package_rfcmp
+        rf2_stage = os.path.join(out, "rf2", track)
+        package_rfcmp.package_track(rf2_stage)
+
     if WARNINGS:
         print("\n%d warning(s) -- read these before loading the track:" % len(set(WARNINGS)))
         for w in dict.fromkeys(WARNINGS):
