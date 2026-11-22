@@ -57,10 +57,14 @@ def vec(s):
 def read_cameras(data_dir):
     out = []
     for path in sorted(glob.glob(os.path.join(data_dir, "cameras*.ini"))):
-        cp = configparser.ConfigParser(strict=False, interpolation=None)
+        cp = configparser.ConfigParser(
+            strict=False, interpolation=None, comment_prefixes=("#", ";", "//"))
         cp.optionxform = str
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            cp.read_file(f)
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            lines = f.readlines()
+        first = next((i for i, line in enumerate(lines)
+                      if line.lstrip().startswith("[")), len(lines))
+        cp.read_string("".join(lines[first:]), source=path)
         for sec in cp.sections():
             if not sec.startswith("CAMERA_"):
                 continue

@@ -912,13 +912,20 @@ def racing_line(track_dir):
 
 
 def read_ini(path):
-    cp = configparser.ConfigParser(strict=False, interpolation=None)
+    cp = configparser.ConfigParser(
+        strict=False, interpolation=None, comment_prefixes=("#", ";", "//"))
     cp.optionxform = str
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            cp.read_file(f)
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            lines = f.readlines()
     except FileNotFoundError:
-        pass
+        return cp
+    # AC's own INI reader ignores preamble lines before the first [SECTION]
+    # (e.g. Riverside's surfaces.ini starts with a bare "V1.0" line), whereas
+    # Python's configparser raises MissingSectionHeaderError.
+    first = next((i for i, line in enumerate(lines)
+                  if line.lstrip().startswith("[")), len(lines))
+    cp.read_string("".join(lines[first:]), source=path)
     return cp
 
 
