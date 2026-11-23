@@ -105,6 +105,40 @@ class Kn5Tests(unittest.TestCase):
             self.assertLessEqual(len(out), convert_track.MAX_TEX_FILENAME)
             self.assertTrue(out.endswith(suf + ".dds"))
 
+    def test_instance_identifier_caps_overlong_names(self):
+        import finalize_track
+
+        used = {"skyboxi", "clouds", "sky", "xpitin", "xpitout"}
+        self.assertEqual(finalize_track.instance_identifier("xfinish", used), "xfinish")
+        self.assertEqual(
+            finalize_track.instance_identifier("a" * 31, used), "a" * 31
+        )
+
+        long_names = [
+            "pitstop__metal_fence_extruded_001_SUB0",
+            "pitstop__metal_fence_extruded_001_SUB1",
+            "corkscrew_traliccio_fili_001_SUB1",
+            "ADV_corkscrew_mazda_coopertires_navidad_SUB0",
+            "ADV_corkscrew_mazda_coopertires_navidad_SUB1",
+        ]
+        shortened = [finalize_track.instance_identifier(n, used) for n in long_names]
+        for s in shortened:
+            self.assertLessEqual(len(s), finalize_track.MAX_INSTANCE_NAME_LENGTH)
+        self.assertEqual(len({s.casefold() for s in shortened}), len(long_names))
+
+        # Deterministic without collision set.
+        self.assertEqual(
+            finalize_track.instance_identifier(long_names[0]),
+            finalize_track.instance_identifier(long_names[0]),
+        )
+
+        # Duplicate short names get disambiguated when a used set is supplied.
+        dup_used = set()
+        first = finalize_track.instance_identifier("x" * 20, dup_used)
+        second = finalize_track.instance_identifier("x" * 20, dup_used)
+        self.assertNotEqual(first.casefold(), second.casefold())
+        self.assertLessEqual(len(second), finalize_track.MAX_INSTANCE_NAME_LENGTH)
+
 
 if __name__ == "__main__":
     unittest.main()

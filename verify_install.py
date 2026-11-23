@@ -211,7 +211,13 @@ def main():
         problems.append("textures rF2 cannot load: %s" % unloadable[:5])
 
     # 2. the detail levels we decided not to draw are really not drawn
-    hidden = set(re.findall(r"Instance=(\S+)\s*\{[^}]*LODOut=\(0\.01\)", scene))
+    # Match by MeshFile so shortened Instance= names still verify cleanly.
+    hidden = {
+        os.path.splitext(m.group(1))[0]
+        for block in re.findall(r"Instance=\S+\s*\{([^}]*)\}", scene)
+        if "LODOut=(0.01)" in block
+        for m in re.finditer(r"MeshFile=(\S+)", block)
+    }
     # Only meshes that were exported at all can be drawn; one that is neither
     # drawn nor collidable is now left out of the export entirely. Each file
     # the export wrote is judged against its own mesh's row, under the name
@@ -353,6 +359,15 @@ def main():
     casters = scene.count("ShadowCaster=")
     if not casters:
         problems.append("no instance casts a shadow")
+
+    # 9. Instance= names must fit inside 32-byte buffer (<= 31 chars + NUL)
+    overlong_instances = [
+        inst for inst in re.findall(r"(?i)\bInstance=([^\s\{\}]+)", scene)
+        if len(inst) > 31
+    ]
+    if overlong_instances:
+        problems.append("scene Instance= names exceed 31-char limit: %d, e.g. %s"
+                        % (len(overlong_instances), overlong_instances[:4]))
 
     if checked and wrong:
         problems.append("alpha thresholds wrong in %d of %d gmts: %s"

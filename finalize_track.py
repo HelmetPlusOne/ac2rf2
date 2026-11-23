@@ -16,7 +16,32 @@ than from the pre-export plan.
 import os
 import json
 import shutil
+import hashlib
 import argparse
+
+MAX_INSTANCE_NAME_LENGTH = 31
+
+
+def instance_identifier(name, used=None):
+    """Keep SCN Instance= names within 31-char limit (+ NUL = 32 bytes)."""
+    if len(name) <= MAX_INSTANCE_NAME_LENGTH and (
+        used is None or name.casefold() not in used
+    ):
+        if used is not None:
+            used.add(name.casefold())
+        return name
+    digest = hashlib.sha1(name.casefold().encode("utf-8")).hexdigest()[:8]
+    prefix = name[:MAX_INSTANCE_NAME_LENGTH - 9].rstrip("_") or "inst"
+    cand = "%s_%s" % (prefix, digest)
+    if used is not None:
+        counter = 2
+        while cand.casefold() in used:
+            tag = "_%d_%s" % (counter, digest[:6])
+            base = name[:MAX_INSTANCE_NAME_LENGTH - len(tag)].rstrip("_") or "inst"
+            cand = base + tag
+            counter += 1
+        used.add(cand.casefold())
+    return cand
 
 SCN_HEADER = """CUBEASF
 // {layout}, converted from Assetto Corsa
@@ -262,9 +287,10 @@ def main():
     lines = [SCN_HEADER.format(venue=venue, layout=layout, cx=cx, cy=cy, cz=cz,
                                amb=args.ambient, sun=args.sun,
                                sx=sx, sy=sy, sz=sz)]
+    used_instances = {"skyboxi", "clouds", "sky", "xpitin", "xpitout"}
     phys = 0
     for row in exported:
-        name = os.path.splitext(row["gmt"])[0]
+        name = instance_identifier(os.path.splitext(row["gmt"])[0], used_instances)
         coll = "True" if row["physical"] else "False"
         if row["physical"]:
             phys += 1
