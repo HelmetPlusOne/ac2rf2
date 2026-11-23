@@ -427,13 +427,21 @@ def wants_bake(mat):
     shader = mat["shader"].lower()
     if "multilayer" in shader:
         return True
-    # Only the shaders that say "detail" actually sample the detail slot. The
-    # plain multimap ones leave a copy of their specular map sitting in it,
-    # which is not a colour at all and would ruin the surface if multiplied in.
+    # Both ksPerPixelMultiMap and *NMDetail* shaders sample txDetail when
+    # useDetail != 0 (verified from AC's compiled shaders). Materials that leave
+    # a copy of txMaps sitting in txDetail have useDetail=0 and/or txDetail == txMaps.
+    props = mat.get("props", {})
     if "detail" not in shader:
+        if "multimap" not in shader:
+            return False
+        if not float(props.get("useDetail", 0.0)):
+            return False
+    elif "useDetail" in props and not float(props["useDetail"]):
         return False
     det = mat["textures"].get("txDetail", "NULL")
     return (not det.lower().startswith("null")
+            and det != mat["textures"].get("txDiffuse")
+            and det != mat["textures"].get("txNormal")
             and det != mat["textures"].get("txMaps"))
 
 
@@ -523,7 +531,17 @@ def dim_copy(disk, scale, tex_dir, tmp, texconv):
                      tex_dir, tmp, texconv)
 
 
-def coverage_copy(disk, ref, tex_dir, tmp, texconv, rgb_scale=1.0):
+def alpha_slot(mat):
+    """AC texture slot carrying transparency/cut-out alpha for this shader.
+
+    In AC's ksPerPixelMultiMap* shaders, txDiffuse.a is the detail-map blend
+    mask (1 - txDiffuse.a tints by txDetail), while pixel output alpha (o0.w,
+    used by _AT alpha testing and blending) comes from txNormal.a.
+    """
+    return "txNormal" if "multimap" in (mat.get("shader") or "").lower() else "txDiffuse"
+
+
+def coverage_copy(disk, ref, tex_dir, tmp, texconv, rgb_scale=1.0, alpha_disk=None):
     """A cut-out texture whose alpha draws AC's shape at rF2's threshold.
 
     Neither threshold works on its own. AC's textures are authored for low
@@ -547,14 +565,22 @@ def coverage_copy(disk, ref, tex_dir, tmp, texconv, rgb_scale=1.0):
     img = to_rgba(path, tmp, sz[0], sz[1])
     if img is None:
         return None
+    if alpha_disk and alpha_disk != disk:
+        a_img = to_rgba(os.path.join(tex_dir, alpha_disk), tmp, sz[0], sz[1])
+        if a_img is None:
+            return None
+        a = a_img[:, :, 3]
+    else:
+        a = img[:, :, 3]
     r = ref / 255.0
     t = CUTOUT_REF / 255.0
-    a = img[:, :, 3]
     above = a >= r
     mapped = np.where(above,
                       t + (a - r) / max(1.0 - r, 1e-6) * (1.0 - t),
                       a * ((t - 1.0 / 255.0) / max(r, 1e-6)))
     stem = os.path.splitext(disk)[0] + "_a%d" % ref
+    if alpha_disk and alpha_disk != disk:
+        stem += "_" + os.path.splitext(alpha_disk)[0]
     if rgb_scale != 1.0:
         stem += "_d%02d" % int(round(rgb_scale * 100))
     return write_dds(stem, np.clip(img[:, :, :3] * rgb_scale, 0.0, 1.0),
@@ -905,9 +931,18 @@ def blend_alpha(mat, base, tex_dir, tmp, files, w, h):
     if not (mat.get("transparent") or mat.get("alpha_test")
             or mat.get("needs_blend")):
         return None
+    names = mat["textures"]
+    if alpha_slot(mat) == "txNormal":
+        t = names.get("txNormal", "NULL")
+        if t.lower().startswith("null"):
+            return None
+        a = to_rgba(os.path.join(tex_dir, files.get(t, t)), tmp, w, h)
+        if a is not None and a.shape[2] > 3 and (
+                float(a[:, :, 3].std()) > 0.01 or float(a[:, :, 3].mean()) < 0.99):
+            return a[:, :, 3]
+        return None
     if base is not None and base.shape[2] > 3 and float(base[:, :, 3].std()) > 0.01:
         return base[:, :, 3]
-    names = mat["textures"]
     for slot in ("txNormal", "txDetail", "txDetailNM", "txNormalDetail"):
         t = names.get(slot, "NULL")
         if t.lower().startswith("null"):
@@ -927,6 +962,61 @@ def detail_mean(det_name, tex_dir, tmp, files):
         return grey
     a = to_rgba(path, tmp, min(size[0], 256), min(size[1], 256))
     return grey if a is None else a[:, :, :3].reshape(-1, 3).mean(axis=0)
+
+
+def bake_multimap_tint(mat, det_name, tex_dir, tmp, cap, files, texconv):
+    """Bake a flat-colour txDetail tint onto txDiffuse using AC's MultiMap formula.
+
+    AC's ksPerPixelMultiMap* shaders frequently pair a greyscale AO atlas
+    (txDiffuse) with a flat solid colour texture in txDetail (e.g. bright blue
+    or yellow wall paint, std == 0), blending by (1 - txDiffuse.a):
+
+        out = lerp(txDiffuse.rgb, txDiffuse.rgb * txDetail.rgb, 1 - txDiffuse.a)
+
+    Sending these through two-stage write_base() divides txDiffuse by
+    2 * mean(txDetail) per channel, which mathematically cancels a flat colour
+    back to neutral grey. Baking the exact AC tint into a single diffuse texture
+    preserves both the colour and the per-pixel txDiffuse.a mask, and saves a
+    texture stage. Returns the baked DDS filename, or None if txDetail carries
+    real spatial grain (std >= 0.01) and should stay two-stage.
+    """
+    if "multimap" not in (mat.get("shader") or "").lower():
+        return None
+    mask_name = mat["textures"].get("txMask")
+    if mask_name and not mask_name.lower().startswith("null"):
+        return None
+    det_path = os.path.join(tex_dir, files.get(det_name, det_name))
+    dsize = dds_size(det_path)
+    if dsize is None:
+        return None
+    det = to_rgba(det_path, tmp, min(dsize[0], 128), min(dsize[1], 128))
+    if det is None:
+        return None
+    if float(det[:, :, :3].reshape(-1, 3).std(axis=0).max()) >= 0.01:
+        return None
+
+    base_name = mat["textures"].get("txDiffuse")
+    if not base_name:
+        return None
+    base_path = os.path.join(tex_dir, files.get(base_name, base_name))
+    size = dds_size(base_path)
+    if size is None:
+        return None
+    bw, bh = size
+    scale = min(1.0, float(cap) / max(bw, bh))
+    from fix_textures import pow2_size
+    max_dim = pow2_size(min(cap, 4096))
+    w = pow2_size(max(4, int(bw * scale)), cap=max_dim)
+    h = pow2_size(max(4, int(bh * scale)), cap=max_dim)
+    base = to_rgba(base_path, tmp, w, h)
+    if base is None:
+        return None
+
+    det_rgb = det[:, :, :3].reshape(-1, 3).mean(axis=0)
+    weight = (1.0 - base[:, :, 3])[:, :, None]
+    out = np.clip(base[:, :, :3] * (1.0 - weight + weight * det_rgb), 0.0, 1.0)
+    alpha = blend_alpha(mat, base, tex_dir, tmp, files, w, h)
+    return write_dds(mat["rf2_material"] + "_baked", out, alpha, tex_dir, tmp, texconv)
 
 
 def write_base(mat, det_name, tex_dir, tmp, cap, files, texconv):
@@ -1031,6 +1121,15 @@ def main():
         found = None if args.no_two_stage else single_detail(
             m, tex_dir, tmp, files, name=name, texconv=args.texconv)
         det, painted = found if found else (None, False)
+        if det is not None and not painted:
+            tinted = bake_multimap_tint(m, det, tex_dir, tmp, args.size, files,
+                                        args.texconv)
+            if tinted is not None:
+                baked[name] = tinted
+                repeats[name] = 1.0
+                print("  %-22s -> %-24s (tinted by %s)"
+                      % (name[:22], tinted, files.get(det, det)[:20]))
+                continue
         composed = None
         if det is not None:
             dmean = detail_mean(det, tex_dir, tmp, files)
@@ -1219,7 +1318,7 @@ def main():
     # nine tenths of the alpha range through, and CSP cuts foliage its own way
     # on top. A material whose texture turns out not to be a mask loses its
     # alpha test altogether instead of being given a fallback threshold.
-    refs, ac_of, disk_of = {}, {}, {}
+    refs, ac_of, disk_of, alpha_disk_of = {}, {}, {}, {}
     for m in data["meshes"]:
         if not m.get("alpha_test"):
             continue
@@ -1231,7 +1330,16 @@ def main():
                                         m["textures"].get("txDiffuse"))
         if not disk:
             continue
-        path = os.path.join(tex_dir, disk)
+        if alpha_slot(m) == "txNormal":
+            raw_alpha = m["textures"].get("txNormal")
+            if not raw_alpha or raw_alpha.lower().startswith("null"):
+                refs[name] = None
+                ac_of[name], disk_of[name], alpha_disk_of[name] = 128, disk, None
+                continue
+            adisk = files.get(raw_alpha, raw_alpha)
+        else:
+            adisk = disk
+        path = os.path.join(tex_dir, adisk)
         ac = float(m.get("props", {}).get("ksAlphaRef", 0.0)) or 0.5
         ac = max(1, min(254, int(round(ac * 255.0))))
         refs[name] = cutout_ref(path, tmp, ac) if os.path.exists(path) else GRADIENT
@@ -1243,7 +1351,7 @@ def main():
         if refs[name] == GRADIENT and os.path.exists(path) \
                 and float(m.get("upward", 0.0)) < 0.5:
             refs[name] = CUTOUT_REF
-        ac_of[name], disk_of[name] = ac, disk
+        ac_of[name], disk_of[name], alpha_disk_of[name] = ac, disk, adisk
     # Only hard masks get a threshold, and only a threshold gets colour keyed.
     # The racing line rubber stays exactly as AC ships it. A copy at twice
     # the opacity, in grey, raised the contrast as measured but read as
@@ -1346,7 +1454,10 @@ def main():
         img = to_rgba(path, tmp, min(sz[0], 512), min(sz[1], 512))
         if img is None:
             continue
-        alpha = img[:, :, 3]
+        # In ksPerPixelMultiMap*, txDiffuse.a is the detail mask (often 0),
+        # not pixel opacity, so do not exclude low-alpha pixels from albedo.
+        alpha = (img[:, :, 3] if alpha_slot(m) == "txDiffuse"
+                 else np.ones(img.shape[:2], dtype=np.float32))
         rgb = img[:, :, :3]
         # Its mean colour, for telling green ground from sand among the
         # materials CSP grows GrassFX on.
@@ -1398,7 +1509,7 @@ def main():
     spec_mask = {}
     for m in data["meshes"]:
         nm = m["rf2_material"]
-        if nm in spec_mask or not m.get("render", True):
+        if nm in spec_mask or not m.get("render", True) or alpha_slot(m) != "txDiffuse":
             continue
         tx = m["textures"].get("txDiffuse")
         src = files.get(tx, tx) if tx else None
@@ -1445,14 +1556,15 @@ def main():
     # rebuilds every mip), so they are made side by side first. The loop below
     # then records them in the same order, with the same messages, as when
     # they were made one by one.
-    wanted = list(dict.fromkeys((disk_of[k], ac_of[k], card_scale(k)) for k in hard))
+    wanted = list(dict.fromkeys(
+        (disk_of[k], alpha_disk_of[k], ac_of[k], card_scale(k)) for k in hard))
     copies = dict(zip(wanted, ordered_map(
-        lambda key, t: coverage_copy(key[0], key[1], tex_dir, t, args.texconv,
-                                     rgb_scale=key[2]),
+        lambda key, t: coverage_copy(key[0], key[2], tex_dir, t, args.texconv,
+                                     rgb_scale=key[3], alpha_disk=key[1]),
         wanted, args.jobs, tmp)))
     for k in hard:
         scale = card_scale(k)
-        key = (disk_of[k], ac_of[k], scale)
+        key = (disk_of[k], alpha_disk_of[k], ac_of[k], scale)
         if key not in made:
             made[key] = copies[key]
             if scale != 1.0:

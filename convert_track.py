@@ -1113,10 +1113,18 @@ def needs_blend(mat, alpha):
     and the two go together. Dropping the transparency and setting only the
     reference stopped the alpha channel being read at all, and every tree and
     fence drew as the solid rectangle its quad really is.
+
+    In AC's ksPerPixelMultiMap* shaders, txDiffuse.a is the detail-map blend
+    mask and pixel output alpha comes from txNormal.a instead.
     """
     if not (mat.alpha_tested or mat.blend):
         return False
-    tex = mat.textures.get("txDiffuse")
+    if "multimap" in (getattr(mat, "shader", None) or "").lower():
+        tex = mat.textures.get("txNormal")
+        if not tex or tex.lower().startswith("null"):
+            return False
+    else:
+        tex = mat.textures.get("txDiffuse")
     pct = alpha.get(tex) if tex else None
     if pct is None:
         return True

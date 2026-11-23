@@ -30,10 +30,40 @@ SAME_FORMAT = {b"DXT1": "BC1_UNORM", b"DXT3": "BC2_UNORM", b"DXT5": "BC3_UNORM",
 # Below this a short chain costs nothing to look at and recompressing only adds
 # error, so small masks and markers are left exactly as AC shipped them.
 MIP_MIN = 128
+MAX_TEX_DIM = 4096
+DEFAULT_SCALE = 1.0
+DEFAULT_SCALE_MIN_SIZE = 1024
 
 # Building mips, texconv weights colour by alpha unless told to treat the two
 # separately. AC stores plenty of opaque surfaces with a zero alpha channel, and
 # without this their smaller mips come out black.
+
+
+def is_pow2(n):
+    return n >= 4 and (n & (n - 1)) == 0
+
+
+def pow2_size(n, cap=MAX_TEX_DIM):
+    """Next power of two >= max(4, n), capped at cap."""
+    n = max(4, int(n))
+    return min(cap, 1 << (n - 1).bit_length())
+
+
+def target_size(n, scale=DEFAULT_SCALE, cap=MAX_TEX_DIM):
+    """Scale a texture dimension and snap to a power of two."""
+    scaled = max(4, int(round(int(n) * float(scale))))
+    max_dim = pow2_size(max(4, int(round(cap * float(scale)))), cap=cap)
+    return pow2_size(scaled, cap=max_dim)
+
+
+def target_dimensions(w, h, scale=DEFAULT_SCALE, min_size=DEFAULT_SCALE_MIN_SIZE,
+                      cap=MAX_TEX_DIM):
+    """Compute target (w, h), scaling only when max(w, h) >= min_size."""
+    effective_scale = float(scale) if max(int(w), int(h)) >= int(min_size) else 1.0
+    return (
+        target_size(w, effective_scale, cap=cap),
+        target_size(h, effective_scale, cap=cap),
+    )
 
 
 def full_levels(w, h):
