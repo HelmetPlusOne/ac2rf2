@@ -257,6 +257,10 @@ def main():
                     help="package the converted track into MAS archives and an RFCMP component (default)")
     ap.add_argument("--no-package", "--skip-package", dest="package", action="store_false",
                     help="skip packaging into MAS archives and RFCMP")
+    ap.add_argument("--texture-scale", type=float, default=None,
+                    help="scale factor per texture dimension (overrides ac2rf2.ini [track] texture_scale; default 1.0)")
+    ap.add_argument("--texture-scale-min-size", type=int, default=None,
+                    help="minimum max(w, h) (inclusive) to scale textures (overrides ac2rf2.ini [track] texture_scale_min_size; default 1024)")
     ap.add_argument("--road-smoothness", type=float, default=None,
                     help="road surface smoothing in [0.0, 1.0] mapped to sigma in [0m, 8m] (0 disables, 0.5 -> 4m moderate, 1.0 -> 8m max; overrides ac2rf2.ini)")
     args = ap.parse_args()
@@ -268,6 +272,14 @@ def main():
         config = steam_paths.load_config()
     except ValueError as exc:
         raise SystemExit("config error: %s" % exc)
+    if args.texture_scale is None:
+        args.texture_scale = config["texture_scale"]
+    elif not (0.0 < args.texture_scale <= 1.0):
+        raise SystemExit("--texture-scale must be between 0 and 1, got %r" % (args.texture_scale,))
+    if args.texture_scale_min_size is None:
+        args.texture_scale_min_size = config["texture_scale_min_size"]
+    elif args.texture_scale_min_size < 0:
+        raise SystemExit("--texture-scale-min-size must be >= 0, got %r" % (args.texture_scale_min_size,))
     if args.road_smoothness is None:
         args.road_smoothness = config["road_smoothness"]
     else:
@@ -298,7 +310,10 @@ def main():
     import check_setup
     reuse = args.skip_geometry and os.path.isdir(os.path.join(out, "gmt"))
     if not check_setup.check(args.track_dir, args.layout, args.blender,
-                             args.install, need_blender=not reuse):
+                             args.install, need_blender=not reuse,
+                             texture_scale=args.texture_scale,
+                             texture_scale_min_size=args.texture_scale_min_size,
+                             road_smoothness=args.road_smoothness):
         raise SystemExit(1)
     print("\nconverting %s" % track)
 
@@ -306,7 +321,11 @@ def main():
     run([py, "convert_track.py", args.track_dir, "--textures"] + lay)
 
     step(2, "texture formats")
-    run([py, "fix_textures.py", os.path.join(out, "textures"), "--jobs", str(args.jobs)])
+    run([py, "fix_textures.py", os.path.join(out, "textures"),
+         "--texconv", steam_paths.TEXCONV,
+         "--scale", str(args.texture_scale),
+         "--scale-min-size", str(args.texture_scale_min_size),
+         "--jobs", str(args.jobs)])
     tex = os.path.join(out, "textures")
     write_clear_texture(os.path.join(tex, "_invisible.dds"))
     # Black. White was the neutral value if rF2 multiplied this by

@@ -292,6 +292,41 @@ class Kn5Tests(unittest.TestCase):
                 with open(os.path.join(layout_dir, extra), "rb") as f:
                     self.assertEqual(f.read(), expected_bytes)
 
+    def test_target_dimensions_scales_and_snaps_power_of_two(self):
+        import fix_textures
+
+        # Scaled down when >= min_size
+        self.assertEqual(fix_textures.target_dimensions(2048, 2048, scale=0.5, min_size=1024), (1024, 1024))
+        self.assertEqual(fix_textures.target_dimensions(1024, 512, scale=0.5, min_size=1024), (512, 256))
+        # Not scaled down when < min_size
+        self.assertEqual(fix_textures.target_dimensions(512, 512, scale=0.5, min_size=1024), (512, 512))
+        self.assertEqual(fix_textures.target_dimensions(256, 128, scale=0.5, min_size=1024), (256, 128))
+        # Non power of two snaps up to power of two
+        self.assertEqual(fix_textures.target_dimensions(300, 200, scale=1.0, min_size=1024), (512, 256))
+
+    def test_load_config_reads_texture_scaling_and_road_smoothness(self):
+        import steam_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            # Default when no file
+            cfg = steam_paths.load_config(root)
+            self.assertFalse(cfg["exists"])
+            self.assertEqual(cfg["texture_scale"], 1.0)
+            self.assertEqual(cfg["texture_scale_min_size"], 1024)
+            self.assertEqual(cfg["road_smoothness"], 0.0)
+
+            # Custom INI
+            ini_path = os.path.join(root, "ac2rf2.ini")
+            with open(ini_path, "w", encoding="utf-8") as f:
+                f.write("[track]\ntexture_scale = 0.5\ntexture_scale_min_size = 512\nroad_smoothness = 0.25\n")
+            cfg = steam_paths.load_config(root)
+            self.assertTrue(cfg["exists"])
+            self.assertEqual(cfg["texture_scale"], 0.5)
+            self.assertEqual(cfg["texture_scale_source"], "ini")
+            self.assertEqual(cfg["texture_scale_min_size"], 512)
+            self.assertEqual(cfg["road_smoothness"], 0.25)
+            self.assertEqual(cfg["road_smooth_sigma"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

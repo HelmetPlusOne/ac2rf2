@@ -108,12 +108,20 @@ def main():
                     help="format for textures DX11 cannot load at all")
     ap.add_argument("--keep-mips", action="store_true",
                     help="leave AC's truncated mip chains alone")
+    ap.add_argument("--scale", type=float, default=DEFAULT_SCALE,
+                    help="scale factor per dimension (default %.2f; 0.5 halves width and height)" % DEFAULT_SCALE)
+    ap.add_argument("--scale-min-size", type=int, default=DEFAULT_SCALE_MIN_SIZE,
+                    help="minimum max(w, h) (inclusive) to apply --scale (default %d; 0 scales all)" % DEFAULT_SCALE_MIN_SIZE)
     ap.add_argument("--jobs", type=int, default=default_jobs(),
                     help="textures converted at the same time (1: one by one)")
     args = ap.parse_args()
+    if not (0.0 < args.scale <= 1.0):
+        raise SystemExit("--scale must be between 0 and 1, got %r" % (args.scale,))
+    if args.scale_min_size < 0:
+        raise SystemExit("--scale-min-size must be >= 0, got %r" % (args.scale_min_size,))
 
     tex_dir = os.path.abspath(args.tex_dir)
-    tmp = os.path.join(os.path.dirname(tex_dir.rstrip("\/")), "_converted")
+    tmp = os.path.join(os.path.dirname(tex_dir.rstrip(r"\/")), "_converted")
     os.makedirs(tmp, exist_ok=True)
 
     todo = []
@@ -124,38 +132,47 @@ def main():
         if info is None:
             kind = image_kind(os.path.join(tex_dir, f))
             if kind:
-                todo.append((f, 0, 0, 0, args.format, kind[1:] + " named .dds"))
+                todo.append((f, 0, 0, 0, 0, 0, args.format, kind[1:] + " named .dds"))
             else:
                 print("skip (not dds): %s" % f)
             continue
         w, h, fourcc, bpp, mips = info
+        tw, th = target_dimensions(w, h, args.scale, args.scale_min_size)
+        need_resize = (w != tw or h != th)
         if min(w, h) < 4:
-            todo.append((f, w, h, bpp, args.format, "under 4x4"))
+            todo.append((f, w, h, tw, th, bpp, args.format, "under 4x4"))
         elif fourcc not in BLOCK:
-            todo.append((f, w, h, bpp, args.format, "%dbpp" % bpp))
+            todo.append((f, w, h, tw, th, bpp, args.format, "%dbpp" % bpp))
+        elif need_resize:
+            reason = ("non-pow2 -> %dx%d" if (not is_pow2(w) or not is_pow2(h))
+                      else "scale -> %dx%d") % (tw, th)
+            todo.append((f, w, h, tw, th, bpp, SAME_FORMAT[fourcc], reason))
         elif (not args.keep_mips and fourcc in SAME_FORMAT
               and max(w, h) >= MIP_MIN and mips < full_levels(w, h)):
-            todo.append((f, w, h, bpp, SAME_FORMAT[fourcc],
+            todo.append((f, w, h, tw, th, bpp, SAME_FORMAT[fourcc],
                          "%d of %d mips" % (mips, full_levels(w, h))))
 
     if not todo:
         print("nothing to convert")
         return
 
-    print("re-encoding %d textures" % len(todo))
+    print("re-encoding %d textures (scale=%.2f, min_size=%d)"
+          % (len(todo), args.scale, args.scale_min_size))
 
     def convert(job, work):
         """One texture; returns the line to print and whether it worked."""
-        f, w, h, bpp, fmt, why = job
+        f, w, h, tw, th, bpp, fmt, why = job
         src = f
         if why.endswith("named .dds"):
             # texconv picks its decoder by extension: give it the real one.
             src = os.path.join(work, os.path.splitext(f)[0] + "." + why.split()[0])
             shutil.copyfile(os.path.join(tex_dir, f), src)
-        r = subprocess.run(
-            [args.texconv, "-f", fmt, "-m", "0", "-sepalpha", "-y", "-ft", "dds",
-             "-o", work, src],
-            cwd=tex_dir, capture_output=True, text=True)
+        mip_arg = str(full_levels(tw, th)) if (w > 0 and h > 0) else "0"
+        cmd = [args.texconv, "-f", fmt, "-m", mip_arg, "-sepalpha", "-y", "-ft", "dds"]
+        if w > 0 and h > 0 and (w != tw or h != th):
+            cmd += ["-w", str(tw), "-h", str(th)]
+        cmd += ["-o", work, src]
+        r = subprocess.run(cmd, cwd=tex_dir, capture_output=True, text=True, errors="replace")
         out = None
         for cand in (f, os.path.splitext(f)[0] + ".DDS",
                      os.path.splitext(f)[0] + ".dds"):
@@ -163,6 +180,18 @@ def main():
             if os.path.exists(p):
                 out = p
                 break
+        if (w == 0 or h == 0) and r.returncode == 0 and out is not None:
+            got = describe(out)
+            if got:
+                gtw, gth = target_dimensions(got[0], got[1], args.scale, args.scale_min_size)
+                if got[0] != gtw or got[1] != gth:
+                    r = subprocess.run(
+                        [args.texconv, "-f", fmt, "-m", str(full_levels(gtw, gth)),
+                         "-sepalpha", "-y", "-ft", "dds",
+                         "-w", str(gtw), "-h", str(gth),
+                         "-o", work, src],
+                        cwd=tex_dir, capture_output=True, text=True, errors="replace")
+                    why += ", resized to %dx%d" % (gtw, gth)
         # Block compression works in 4x4 tiles and rF2 will not create a
         # texture smaller than one ("error initializing image surface"); mods
         # embed 1x1 placeholders. Stretch anything that small to 4x4.
@@ -171,12 +200,12 @@ def main():
             r = subprocess.run(
                 [args.texconv, "-f", fmt, "-m", "0", "-sepalpha", "-y", "-ft", "dds",
                  "-w", str(max(4, got[0])), "-h", str(max(4, got[1])),
-                 "-o", work, src], cwd=tex_dir, capture_output=True, text=True)
+                 "-o", work, src], cwd=tex_dir, capture_output=True, text=True, errors="replace")
             why += ", stretched to 4x4"
         if r.returncode != 0 or out is None:
             return False, "  FAILED %-28s %s" % (f, (r.stdout or r.stderr).strip()[-70:])
         shutil.move(out, os.path.join(tex_dir, f))
-        return True, "  %-28s %dx%d %-14s -> %s" % (f, w, h, why, fmt)
+        return True, "  %-28s %dx%d %-18s -> %s" % (f, w, h, why, fmt)
 
     # Each texture is its own texconv run, so they go side by side.
     converted = failed = 0

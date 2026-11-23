@@ -132,11 +132,37 @@ def check_blender(rep, blender):
 
 
 def check(track_dir=None, layout=None, blender=None, install=None,
-          need_blender=True):
+          need_blender=True, texture_scale=None, texture_scale_min_size=None,
+          road_smoothness=None):
     """Print one line per check; True when nothing is missing."""
     import steam_paths
     rep = Report()
     print("checking setup")
+
+    try:
+        cfg = steam_paths.load_config()
+    except ValueError as exc:
+        rep.problem("config error: %s" % exc)
+        cfg = None
+
+    if cfg is not None:
+        def _fmt(key, cli_val):
+            cfg_val = cfg[key]
+            src = cfg.get(key + "_source", "default")
+            if cli_val is not None and cli_val != cfg_val:
+                return "%s=%s [from CLI, %s=%s]" % (key, cli_val, src, cfg_val)
+            tag = "from ini" if src == "ini" else "default"
+            return "%s=%s [%s]" % (key, cfg_val if cli_val is None else cli_val, tag)
+
+        summary = ", ".join((
+            _fmt("texture_scale", texture_scale),
+            _fmt("texture_scale_min_size", texture_scale_min_size),
+            _fmt("road_smoothness", road_smoothness),
+        ))
+        if cfg["exists"]:
+            rep.ok("config         %s (%s)" % (cfg["path"], summary))
+        else:
+            rep.note("config         %s not found (%s)" % (cfg["path"], summary))
 
     v = sys.version_info
     if v < (3, 10):
