@@ -171,7 +171,7 @@ def cutout_ref(path, tmp, ac_ref):
 
 
 def run(args):
-    return subprocess.run(args, capture_output=True, text=True)
+    return subprocess.run(args, capture_output=True, text=True, errors="replace")
 
 
 def dds_size(path):
