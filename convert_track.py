@@ -248,6 +248,8 @@ def texture_filenames(names):
         if ext.lower() in IMAGE_EXTENSIONS:
             ext = ".dds"
         clean = safe(base)
+        if clean.upper() in {"NULL", "NONE", "NIL", "EMPTY"}:
+            clean = "tex_" + clean.lower()
         cand = fit_tex_stem(clean, ext=ext) + ext
         if cand.lower() in taken:
             i = 2
@@ -1083,6 +1085,8 @@ class Materials:
         ident = (key, prefix)
         if ident not in self.names:
             base = safe(ac_name) if prefix is None else "%s_%s" % (prefix, safe(ac_name))
+            if base.upper() in {"NULL", "NONE", "NIL", "EMPTY"}:
+                base = "mat_" + base.lower()
             name, i = base, 1
             while name.lower() in self.taken:
                 i += 1
@@ -1503,10 +1507,17 @@ def main():
     for m in mesh_rows:
         scn.append("Instance=%s" % safe(m["mesh"]))
         scn.append("{")
-        scn.append("  MeshFile=%s.gmt CollTarget=%s HATTarget=%s ShadowReceiver=True"
-                   % (safe(m["mesh"]),
-                      "True" if m["physical"] else "False",
-                      "True" if m["physical"] else "False"))
+        if not m.get("render", True):
+            scn.append("  Render=False Change=False")
+            scn.append("  MeshFile=%s.gmt CollTarget=%s HATTarget=%s"
+                       % (safe(m["mesh"]),
+                          "True" if m["physical"] else "False",
+                          "True" if m["physical"] else "False"))
+        else:
+            scn.append("  MeshFile=%s.gmt CollTarget=%s HATTarget=%s ShadowReceiver=True"
+                       % (safe(m["mesh"]),
+                          "True" if m["physical"] else "False",
+                          "True" if m["physical"] else "False"))
         scn.append("}")
     write(os.path.join(out_dir, track_id + ".scn"), "\n".join(scn))
 

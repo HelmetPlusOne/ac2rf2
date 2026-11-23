@@ -581,18 +581,19 @@ def main():
         hat = "False" if row.get("timing") else coll
         # AC marks some meshes as collision-only shells. Drawing them puts a
         # blank wall over the real road and barriers, so keep the collision but
-        # close the visible range to nothing.
-        invisible = row.get("timing") or not row.get("render", True)
-        if invisible:
-            extra = " LODIn=(0.0) LODOut=(0.01)"
-        else:
-            # AC's switching distances, carried straight across. Without them
-            # every detail level of a surface drew at once and the coplanar
-            # copies flickered against each other.
-            lin = float(row.get("lod_in") or 0.0)
-            lout = float(row.get("lod_out") or 0.0)
-            extra = (" LODIn=(%.1f) LODOut=(%.1f)" % (lin, lout)) if lout > 0.0 else ""
-        if row.get("shadow") and not invisible:
+        # mark them non-renderable so gMotor does not bind shaders or textures.
+        if not row.get("render", True):
+            lines.append(
+                "Instance=%s\n{\n"
+                "  Render=False Change=False\n"
+                "  MeshFile=%s CollTarget=%s HATTarget=%s\n}\n"
+                % (name, row["gmt"], coll, hat)
+            )
+            continue
+        lin = float(row.get("lod_in") or 0.0)
+        lout = float(row.get("lod_out") or 0.0)
+        extra = (" LODIn=(%.1f) LODOut=(%.1f)" % (lin, lout)) if lout > 0.0 else ""
+        if row.get("shadow"):
             extra += " ShadowCaster=(Static, %s)" % row["shadow"]
         lines.append("Instance=%s\n{\n  MeshFile=%s CollTarget=%s HATTarget=%s%s\n}\n"
                      % (name, row["gmt"], coll, hat, extra))

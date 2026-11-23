@@ -1253,3 +1253,27 @@ combinations, 842 kn5 files), not only on the seven built so far.
   5. Tested on `out\targa_tas_21_s1_high_plains`: successfully generated
      `Targa_Tas_21_Leg_1_TS01_High_Plains_v1.0.rfcmp` (185,523,699 bytes),
      and verified installation into rF2's `Installed\Locations\`.
+
+## 2026-11-23: Collision meshes, dummy materials and "NULL" texture token in gMotor
+- Investigated `Error loading texture NULL for material wall_NULL` on track load
+  (`jr_road_atlanta_2022`).
+- Traced `ratl_physical.kn5`: collision walls `1WALL.001A`..`1WALL.001P` have
+  `renderable: 0`, `physical: 1`, material `NULL`, shader `ksPerPixel`, and diffuse
+  texture `NULL.dds` (224-byte DXT5 4x4 block).
+- Confirmed in gMotor 2.0 (rF1/AMS1/rF2): texture loading treats `"NULL"`, `"NONE"`,
+  and `""` as null tokens (`stricmp(texName, "NULL") == 0 -> return NULL;`). Because
+  diffuse shaders (`L2DIFFUSET0`) require a texture sampler at stage 0, a missing
+  texture pointer causes gMotor to halt with `Error loading texture NULL for material ...`.
+- Confirmed in SCN scene generation: non-renderable collision meshes (`not render`)
+  previously lacked `Render=False`, instead using `LODIn=(0.0) LODOut=(0.01)`. In
+  gMotor 2.0, omitting `Render=False` marks the instance as a visual render object,
+  forcing texture allocation and shader binding during track load.
+- Resolved:
+  1. `convert_track.py`: Sanitized texture and material base names matching
+     `NULL`, `NONE`, `NIL`, `EMPTY` by prefixing with `tex_` (e.g. `tex_null.dds`)
+     and `mat_`.
+  2. `finalize_track.py`: Exported non-renderable collision meshes with
+     `Render=False Change=False` in SCN, preventing visual rendering and texture
+     allocation.
+  3. `verify_install.py`: Accepted `Render=False` alongside `LODOut=(0.01)` when
+     verifying hidden instances.

@@ -215,7 +215,7 @@ def main():
     hidden = {
         os.path.splitext(m.group(1))[0]
         for block in re.findall(r"Instance=\S+\s*\{([^}]*)\}", scene)
-        if "LODOut=(0.01)" in block
+        if "Render=False" in block or "LODOut=(0.01)" in block
         for m in re.finditer(r"MeshFile=(\S+)", block)
     }
     # Only meshes that were exported at all can be drawn; one that is neither
