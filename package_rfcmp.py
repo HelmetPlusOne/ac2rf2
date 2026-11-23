@@ -36,6 +36,7 @@ user32.PostMessageW.restype = wintypes.BOOL
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
+WM_COMMAND = 0x0111
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 MK_LBUTTON = 0x0001
@@ -200,47 +201,32 @@ def build_rfcmp_via_mas2(mas2_exe, cmpinfo_content, target_rfcmp_path, timeout=1
             raise RuntimeError("Could not find MAS2 main window")
         print(f"MAS2 main HWND: {mas2_hwnd}", flush=True)
 
-        # 2. Find Toolbar
-        tb_hwnd = None
-        def find_tb(hwnd, _):
-            nonlocal tb_hwnd
-            cbuf = ctypes.create_unicode_buffer(256)
-            user32.GetClassNameW(hwnd, cbuf, 256)
-            if cbuf.value == "ToolbarWindow32":
-                tb_hwnd = hwnd
-                return False
-            return True
-        user32.EnumChildWindows(mas2_hwnd, WNDENUMPROC(find_tb), 0)
-        if not tb_hwnd:
-            raise RuntimeError("Could not find ToolbarWindow32")
-
-        # 3. Click toolbar button 6 ("Create the package file.")
-        lparam = (11 << 16) | 132
-        user32.PostMessageW(tb_hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
-        time.sleep(0.05)
-        user32.PostMessageW(tb_hwnd, WM_LBUTTONUP, 0, lparam)
-        print("Clicked Toolbar 'Create package' button", flush=True)
-
-        # 4. Wait for 'rFactor2 Mod Packager' dialog and click button 1109 ("Create Single Cmp Package")
+        # 2. Open 'rFactor2 Mod Packager' dialog (Command ID 32824) and click button 1109 ("Create Single Cmp Package")
         btn1109 = None
-        for _ in range(40):
-            time.sleep(0.1)
-            def find_packager(hwnd, _):
-                nonlocal btn1109
-                pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                if pid.value == proc.pid:
-                    tbuf = ctypes.create_unicode_buffer(256)
-                    user32.GetWindowTextW(hwnd, tbuf, 256)
-                    if "Mod Packager" in tbuf.value:
-                        def find_child(ch, _):
-                            nonlocal btn1109
-                            if user32.GetDlgCtrlID(ch) == 1109:
-                                btn1109 = ch
-                            return True
-                        user32.EnumChildWindows(hwnd, WNDENUMPROC(find_child), 0)
-                return True
-            user32.EnumWindows(WNDENUMPROC(find_packager), 0)
+        for attempt in range(10):
+            user32.PostMessageW(mas2_hwnd, WM_COMMAND, 32824, 0)
+            for _ in range(10):
+                time.sleep(0.1)
+                def find_packager(hwnd, _):
+                    nonlocal btn1109
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    if pid.value == proc.pid:
+                        tbuf = ctypes.create_unicode_buffer(256)
+                        user32.GetWindowTextW(hwnd, tbuf, 256)
+                        if "Mod Packager" in tbuf.value:
+                            def find_child(ch, _):
+                                nonlocal btn1109
+                                if user32.GetDlgCtrlID(ch) == 1109:
+                                    btn1109 = ch
+                                    return False
+                                return True
+                            user32.EnumChildWindows(hwnd, WNDENUMPROC(find_child), 0)
+                            return False
+                    return True
+                user32.EnumWindows(WNDENUMPROC(find_packager), 0)
+                if btn1109:
+                    break
             if btn1109:
                 break
 
