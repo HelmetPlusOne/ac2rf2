@@ -1,4 +1,8 @@
 out/
+dist/
+work/
+*.7z
+*.zip
 __pycache__/
 *.pyc
 *.log

@@ -21,8 +21,24 @@ import subprocess
 
 from parallel import default_jobs
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-BLENDER = r"D:\Apps\Blender\blender.exe"
+HERE = (
+    os.path.dirname(os.path.abspath(sys.executable))
+    if getattr(sys, "frozen", False)
+    else os.path.dirname(os.path.abspath(__file__))
+)
+BLENDER = (
+    os.path.join(HERE, "tools", "blender", "blender.exe")
+    if os.path.isfile(os.path.join(HERE, "tools", "blender", "blender.exe"))
+    else r"D:\Apps\Blender\blender.exe"
+)
+
+
+def stage_cmd(script_name, *stage_args):
+    """Build a command line for one pipeline stage, frozen or unfrozen."""
+    if getattr(sys, "frozen", False):
+        stage = os.path.splitext(os.path.basename(script_name))[0]
+        return [sys.executable, "--stage", stage, *stage_args]
+    return [sys.executable, os.path.join(HERE, script_name), *stage_args]
 
 
 TOTAL_STEPS = 8
@@ -43,7 +59,7 @@ def collect_warnings(out):
 
 
 def run(args, quiet=False):
-    r = subprocess.run(args, capture_output=True, text=True, cwd=HERE)
+    r = subprocess.run(args, capture_output=True, text=True, errors="replace", cwd=HERE)
     out = (r.stdout or "") + (r.stderr or "")
     collect_warnings(out)
     if r.returncode != 0:
@@ -293,9 +309,18 @@ def main():
         os.environ["AC2RF2_RF2_DIR"] = os.path.abspath(args.rf2)
     if args.ac:
         os.environ["AC2RF2_AC_DIR"] = os.path.abspath(args.ac)
+    if not args.blender:
+        args.blender = steam_paths.BLENDER
+    if args.install is None and steam_paths.IS_STANDALONE:
+        args.install = "auto"
     if args.install == "auto":
-        import steam_paths
-        args.install = steam_paths.LOCATIONS
+        args.install = steam_paths.INSTALL_LOCATIONS
+        if steam_paths.IS_STANDALONE:
+            os.makedirs(args.install, exist_ok=True)
+    elif args.install:
+        args.install = os.path.abspath(args.install)
+
+    args.track_dir = os.path.abspath(args.track_dir)
     import track_zip
     if track_zip.is_zip(args.track_dir):
         args.track_dir = track_zip.extract(args.track_dir)
@@ -303,8 +328,7 @@ def main():
     track = os.path.basename(os.path.abspath(args.track_dir).rstrip("\\/"))
     if args.layout:
         track = "%s_%s" % (track, args.layout)
-    out = os.path.join(HERE, "out", track)
-    py = sys.executable
+    out = os.path.join(steam_paths.WORK_ROOT, track)
     lay = ["--layout", args.layout] if args.layout else []
 
     import check_setup
@@ -318,14 +342,14 @@ def main():
     print("\nconverting %s" % track)
 
     step(1, "model, surfaces and textures")
-    run([py, "convert_track.py", args.track_dir, "--textures"] + lay)
+    run(stage_cmd("convert_track.py", args.track_dir, "-o", out, "--textures", *lay))
 
     step(2, "texture formats")
-    run([py, "fix_textures.py", os.path.join(out, "textures"),
-         "--texconv", steam_paths.TEXCONV,
-         "--scale", str(args.texture_scale),
-         "--scale-min-size", str(args.texture_scale_min_size),
-         "--jobs", str(args.jobs)])
+    run(stage_cmd("fix_textures.py", os.path.join(out, "textures"),
+                  "--texconv", steam_paths.TEXCONV,
+                  "--scale", str(args.texture_scale),
+                  "--scale-min-size", str(args.texture_scale_min_size),
+                  "--jobs", str(args.jobs)))
     tex = os.path.join(out, "textures")
     write_clear_texture(os.path.join(tex, "_invisible.dds"))
     # Black. White was the neutral value if rF2 multiplied this by
@@ -338,16 +362,16 @@ def main():
     write_solid_texture(os.path.join(tex, "_white.dds"), (255, 255, 255))
 
     step(3, "composing multilayer materials")
-    run([py, "bake_layers.py", out, "--size", str(args.bake_size),
-         "--grain", args.grain, "--detail-metres", args.detail_metres,
-         "--jobs", str(args.jobs)])
+    run(stage_cmd("bake_layers.py", out, "--size", str(args.bake_size),
+                  "--grain", args.grain, "--detail-metres", args.detail_metres,
+                  "--jobs", str(args.jobs)))
 
     step(4, "waypoints, grid and pit lane")
-    run([py, "make_aiw.py", args.track_dir, os.path.join(out, track + ".AIW")] + lay)
+    run(stage_cmd("make_aiw.py", args.track_dir, os.path.join(out, track + ".AIW"), *lay))
 
     step(5, "trackside cameras")
-    run([py, "make_cam.py", args.track_dir, os.path.join(out, track + ".cam"),
-         "--aiw", os.path.join(out, track + ".AIW")] + lay)
+    run(stage_cmd("make_cam.py", args.track_dir, os.path.join(out, track + ".cam"),
+                  "--aiw", os.path.join(out, track + ".AIW"), *lay))
 
     step(6, "geometry (this is the slow one)")
     gmt_dir = os.path.join(out, "gmt")
@@ -361,7 +385,7 @@ def main():
             shutil.rmtree(gmt_dir)
         log = blender_stage(
             [args.blender, "--background", "--factory-startup", "--python",
-             "blender_stage.py", "--", os.path.join(out, "material_map.json")],
+             steam_paths.BLENDER_STAGE, "--", os.path.join(out, "material_map.json")],
             ["--diffuse", args.diffuse, "--ambient", args.ambient, "--gain", args.gain],
             gmt_dir, args.jobs)
 
@@ -377,9 +401,9 @@ def main():
     print("   %d meshes exported" % len(exported))
 
     step(7, "scene, database and install")
-    cmd = [py, "finalize_track.py", out, "--hour", args.hour,
-           "--ambient", args.scene_ambient,
-           "--road-smoothness", repr(args.road_smoothness)]
+    cmd = stage_cmd("finalize_track.py", out, "--hour", args.hour,
+                    "--ambient", args.scene_ambient,
+                    "--road-smoothness", repr(args.road_smoothness))
     preview = track_preview(args.track_dir, args.layout)
     if preview:
         cmd += ["--preview", preview, "--texconv", steam_paths.TEXCONV]

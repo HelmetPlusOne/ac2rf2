@@ -1,4 +1,5 @@
 import os
+import sys
 import types
 import struct
 import tempfile
@@ -326,6 +327,84 @@ class Kn5Tests(unittest.TestCase):
             self.assertEqual(cfg["texture_scale_min_size"], 512)
             self.assertEqual(cfg["road_smoothness"], 0.25)
             self.assertEqual(cfg["road_smooth_sigma"], 2.0)
+
+    def test_cli_dispatches_build_track_and_convert_multiple_tracks(self):
+        import ac2rf2
+        import build_track
+        import convert_multiple_tracks
+
+        seen = []
+
+        def fake_build():
+            seen.append(("build", list(sys.argv)))
+            return 0
+
+        def fake_batch():
+            seen.append(("batch", list(sys.argv)))
+            return 0
+
+        with mock.patch.object(build_track, "main", side_effect=fake_build), \
+                mock.patch.object(convert_multiple_tracks, "main", side_effect=fake_batch):
+            self.assertEqual(ac2rf2.main(["build_track", "C:\\track", "--hour", "10:00"]), 0)
+            self.assertEqual(ac2rf2.main(["convert_multiple_tracks", "tracks.txt"]), 0)
+            self.assertEqual(ac2rf2.main(["--stage", "build_track", "C:\\track2"]), 0)
+
+        self.assertEqual(seen[0][0], "build")
+        self.assertEqual(seen[0][1][1:], ["C:\\track", "--hour", "10:00"])
+        self.assertEqual(seen[1][0], "batch")
+        self.assertEqual(seen[1][1][1:], ["tracks.txt"])
+        self.assertEqual(seen[2][0], "build")
+        self.assertEqual(seen[2][1][1:], ["C:\\track2"])
+
+    def test_cli_stage_dispatch_handles_script_only_modules(self):
+        import ac2rf2
+
+        for stage in ("make_aiw", "make_cam"):
+            self.assertEqual(ac2rf2.main(["--stage", stage, "--help"]), 0)
+
+    def test_drag_and_drop_directory_and_batch_file(self):
+        import ac2rf2
+        import build_track
+        import convert_multiple_tracks
+
+        seen = []
+
+        def fake_build():
+            seen.append(("build", list(sys.argv)))
+            return 0
+
+        def fake_batch():
+            seen.append(("batch", list(sys.argv)))
+            return 0
+
+        with tempfile.TemporaryDirectory() as root:
+            single_track = os.path.join(root, "targa")
+            multi_track = os.path.join(root, "nords")
+            batch_file = os.path.join(root, "tracks.txt")
+            os.makedirs(single_track)
+            os.makedirs(multi_track)
+            with open(os.path.join(multi_track, "models_endurance.ini"), "w") as f:
+                f.write("")
+            with open(os.path.join(multi_track, "models_nordschleife.ini"), "w") as f:
+                f.write("")
+            with open(batch_file, "w") as f:
+                f.write(single_track + ";\n")
+
+            with mock.patch.object(build_track, "main", side_effect=fake_build), \
+                    mock.patch.object(convert_multiple_tracks, "main", side_effect=fake_batch), \
+                    mock.patch.object(ac2rf2, "_pause_if_explorer"), \
+                    mock.patch.object(sys.stdin, "isatty", return_value=True), \
+                    mock.patch("builtins.input", return_value="2"):
+                self.assertEqual(ac2rf2.main([single_track]), 0)
+                self.assertEqual(ac2rf2.main([multi_track]), 0)
+                self.assertEqual(ac2rf2.main([batch_file]), 0)
+
+        self.assertEqual(seen[0][0], "build")
+        self.assertEqual(seen[0][1][1:], [single_track])
+        self.assertEqual(seen[1][0], "build")
+        self.assertEqual(seen[1][1][1:], [multi_track, "--layout", "nordschleife"])
+        self.assertEqual(seen[2][0], "batch")
+        self.assertEqual(seen[2][1][1:], [batch_file])
 
 
 if __name__ == "__main__":
