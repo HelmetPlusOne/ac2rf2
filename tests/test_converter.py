@@ -1,7 +1,9 @@
 import os
+import types
 import struct
 import tempfile
 import unittest
+from unittest import mock
 
 import kn5
 
@@ -183,6 +185,112 @@ class Kn5Tests(unittest.TestCase):
         self.assertTrue(interior.any())
         max_err = float(np.abs(smoothed[interior, 1] - pos[interior, 1]).max())
         self.assertLess(max_err, 1e-4)
+
+    def test_track_preview_prefers_layout_map_and_skips_tiny_placeholders(self):
+        import build_track
+
+        def write_png_header(path, width, height):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            header = (
+                b"\x89PNG\r\n\x1a\n"
+                + struct.pack(">I", 13)
+                + b"IHDR"
+                + struct.pack(">II", width, height)
+                + b"\x08\x06\x00\x00\x00"
+            )
+            with open(path, "wb") as f:
+                f.write(header)
+
+        with tempfile.TemporaryDirectory() as root:
+            write_png_header(os.path.join(root, "map.png"), 800, 600)
+            write_png_header(os.path.join(root, "ui", "nords", "preview.png"), 355, 200)
+            write_png_header(os.path.join(root, "ui", "nords", "outline.png"), 365, 192)
+            # Layout-specific outline beats root map when layout map is missing or tiny.
+            write_png_header(os.path.join(root, "nords", "map.png"), 20, 20)
+            self.assertEqual(
+                build_track.track_preview(root, "nords"),
+                os.path.join(root, "ui", "nords", "outline.png"),
+            )
+            # Full-size layout map beats outline and preview.
+            write_png_header(os.path.join(root, "nords", "map.png"), 1579, 1244)
+            self.assertEqual(
+                build_track.track_preview(root, "nords"),
+                os.path.join(root, "nords", "map.png"),
+            )
+
+    def test_stages_menu_images_from_ac_track_map(self):
+        import numpy as np
+        import finalize_track
+
+        seen_loading_canvas = {}
+
+        def fake_texconv(command, **_kwargs):
+            output_dir = command[command.index("-o") + 1]
+            image_format = command[command.index("-ft") + 1].upper()
+            src = command[-1]
+            stem = os.path.splitext(os.path.basename(src))[0]
+            out_path = os.path.join(output_dir, stem + "." + image_format)
+
+            if image_format == "TGA":
+                if "-w" in command and "-h" in command:
+                    tw = int(command[command.index("-w") + 1])
+                    th = int(command[command.index("-h") + 1])
+                    src_img = finalize_track._read_tga_bgra(src)
+                    ys = np.linspace(0, src_img.shape[0] - 1, th).astype(np.intp)
+                    xs = np.linspace(0, src_img.shape[1] - 1, tw).astype(np.intp)
+                    resized = src_img[np.ix_(ys, xs)]
+                    finalize_track._write_tga_bgra(out_path, resized, bottom_up=False)
+                else:
+                    # Synthetic 200x400 RGBA track map: transparent border + bright vertical stripe
+                    arr = np.zeros((400, 200, 4), dtype=np.uint8)
+                    arr[40:360, 80:120, :3] = 255
+                    arr[40:360, 80:120, 3] = 255
+                    finalize_track._write_tga_bgra(out_path, arr, bottom_up=False)
+            elif image_format == "JPG":
+                seen_loading_canvas["img"] = finalize_track._read_tga_bgra(src)
+                with open(out_path, "wb") as f:
+                    f.write(b"\xff\xd8\xffJPG")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as root:
+            preview = os.path.join(root, "map.png")
+            layout_dir = os.path.join(root, "layout")
+            os.makedirs(layout_dir)
+            with open(preview, "wb") as f:
+                f.write(b"png")
+
+            with mock.patch.object(finalize_track.subprocess, "run",
+                                   side_effect=fake_texconv):
+                count = finalize_track.stage_menu_images(
+                    preview, layout_dir, "sample_track", "texconv.exe")
+
+            self.assertEqual(count, 4)
+            # Loading screen canvas is 1920x1080, dark background, centered bright track.
+            canvas = seen_loading_canvas["img"]
+            self.assertEqual(canvas.shape, (1080, 1920, 4))
+            self.assertLess(int(canvas[0, 0, 0]), 40)
+            self.assertGreater(int(canvas[540, 960, 0]), 200)
+            with open(os.path.join(layout_dir, "sample_track_loading.jpg"), "rb") as f:
+                self.assertEqual(f.read(), b"\xff\xd8\xffJPG")
+
+            # Mini TGA is 252x249 32-bit bottom-up RGBA with transparent corners and visible center.
+            mini_path = os.path.join(layout_dir, "sample_trackmini.tga")
+            with open(mini_path, "rb") as f:
+                hdr = f.read(18)
+            self.assertEqual(hdr[2], 2)
+            self.assertEqual(struct.unpack_from("<HH", hdr, 12), (252, 249))
+            self.assertEqual((hdr[16], hdr[17]), (32, 8))
+            mini = finalize_track._read_tga_bgra(mini_path)
+            self.assertEqual(int(mini[0, 0, 3]), 0)
+            self.assertEqual(int(mini[124, 126, 3]), 255)
+
+            # Check that Thmb.tga and icon.tga were created as copies of mini.tga
+            with open(mini_path, "rb") as mf:
+                expected_bytes = mf.read()
+            for extra in ("sample_trackThmb.tga", "sample_trackicon.tga"):
+                self.assertTrue(os.path.isfile(os.path.join(layout_dir, extra)))
+                with open(os.path.join(layout_dir, extra), "rb") as f:
+                    self.assertEqual(f.read(), expected_bytes)
 
 
 if __name__ == "__main__":

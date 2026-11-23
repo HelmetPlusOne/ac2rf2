@@ -16,8 +16,11 @@ than from the pre-export plan.
 import os
 import json
 import shutil
+import struct
 import hashlib
 import argparse
+import tempfile
+import subprocess
 
 MAX_INSTANCE_NAME_LENGTH = 31
 
@@ -197,6 +200,266 @@ def shadow_caster(row, cutouts):
     return "Solid"
 
 
+LOADING_SIZE = (1920, 1080)
+LOADING_FIT = (1536, 820)
+MINI_SIZE = (252, 249)
+MINI_FIT = (216, 213)
+MAX_DECODE_DIM = 2048
+
+
+def _png_dimensions(path):
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+    except OSError:
+        return None
+    if len(head) >= 24 and head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR":
+        return struct.unpack_from(">II", head, 16)
+    return None
+
+
+def _run_texconv(command, description):
+    result = subprocess.run(
+        command, capture_output=True, text=True, errors="replace"
+    )
+    if result.returncode:
+        details = (result.stdout or "") + (result.stderr or "")
+        raise RuntimeError("texconv failed %s:\n%s" % (description, details[-2000:]))
+
+
+def _read_tga_bgra(path):
+    import numpy as np
+
+    with open(path, "rb") as f:
+        data = f.read()
+    if len(data) < 18:
+        raise RuntimeError("truncated TGA image: %s" % path)
+    id_len = data[0]
+    img_type = data[2]
+    width, height = struct.unpack_from("<HH", data, 12)
+    bpp = data[16]
+    descriptor = data[17]
+    if img_type != 2 or bpp not in (24, 32) or not width or not height:
+        raise RuntimeError(
+            "unsupported TGA format in %s (type=%d, bpp=%d, %dx%d)"
+            % (path, img_type, bpp, width, height)
+        )
+    channels = bpp // 8
+    start = 18 + id_len
+    need = width * height * channels
+    if len(data) < start + need:
+        raise RuntimeError("truncated TGA pixel data: %s" % path)
+    pixels = np.frombuffer(
+        data, dtype=np.uint8, count=need, offset=start
+    ).reshape(height, width, channels)
+    if (descriptor & 0x20) == 0:
+        pixels = pixels[::-1]
+    if channels == 3:
+        bgra = np.empty((height, width, 4), dtype=np.uint8)
+        bgra[:, :, :3] = pixels
+        bgra[:, :, 3] = 255
+        return bgra
+    return pixels.copy()
+
+
+def _write_tga_bgra(path, bgra, bottom_up=True):
+    import numpy as np
+
+    height, width, channels = bgra.shape
+    if channels != 4:
+        raise ValueError("expected 4-channel BGRA image, got %d" % channels)
+    descriptor = 8 if bottom_up else 40
+    header = struct.pack(
+        "<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0, width, height, 32, descriptor
+    )
+    body = bgra[::-1] if bottom_up else bgra
+    with open(path, "wb") as f:
+        f.write(header)
+        f.write(np.ascontiguousarray(body, dtype=np.uint8).tobytes())
+
+
+def _dilate_track(bgra, radius):
+    """Slightly thicken thin transparent track maps so they survive downscaling."""
+    import numpy as np
+
+    if radius <= 0:
+        return bgra
+    out = bgra.copy()
+    height, width, _ = bgra.shape
+    for _ in range(radius):
+        padded = np.pad(out, ((1, 1), (1, 1), (0, 0)), mode="edge")
+        best = out.copy()
+        best_score = (
+            best[:, :, 3].astype(np.int32) * 768
+            + best[:, :, 0].astype(np.int32)
+            + best[:, :, 1].astype(np.int32)
+            + best[:, :, 2].astype(np.int32)
+        )
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                nb = padded[1 + dy:1 + dy + height, 1 + dx:1 + dx + width]
+                nb_score = (
+                    nb[:, :, 3].astype(np.int32) * 768
+                    + nb[:, :, 0].astype(np.int32)
+                    + nb[:, :, 1].astype(np.int32)
+                    + nb[:, :, 2].astype(np.int32)
+                )
+                mask = nb_score > best_score
+                best[mask] = nb[mask]
+                best_score[mask] = nb_score[mask]
+        out = best
+    return out
+
+
+def _resize_tga_bgra(bgra, width, height, texconv, temp_dir, tag):
+    src_path = os.path.join(temp_dir, tag + "_src.tga")
+    out_dir = os.path.join(temp_dir, tag + "_out")
+    os.makedirs(out_dir, exist_ok=True)
+    _write_tga_bgra(src_path, bgra, bottom_up=False)
+    _run_texconv(
+        [texconv, "-y", "-ft", "tga", "-f", "B8G8R8A8_UNORM",
+         "-w", str(width), "-h", str(height), "-o", out_dir, src_path],
+        "resizing %s" % tag,
+    )
+    resized_path = os.path.join(out_dir, tag + "_src.TGA")
+    if not os.path.isfile(resized_path):
+        raise RuntimeError("texconv did not produce %s" % resized_path)
+    return _read_tga_bgra(resized_path)
+
+
+def _loading_background(width=LOADING_SIZE[0], height=LOADING_SIZE[1]):
+    """Dark charcoal radial-gradient canvas matching standard loading screen style."""
+    import numpy as np
+
+    yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
+    dist = np.sqrt(
+        ((xx - width * 0.5) / (width * 0.55)) ** 2
+        + ((yy - height * 0.5) / (height * 0.65)) ** 2
+    )
+    val = np.clip(32.0 - 22.0 * np.clip(dist, 0.0, 1.0), 10.0, 32.0).astype(np.uint8)
+    canvas = np.empty((height, width, 4), dtype=np.uint8)
+    canvas[:, :, 0] = val
+    canvas[:, :, 1] = val
+    canvas[:, :, 2] = val
+    canvas[:, :, 3] = 255
+    return canvas
+
+
+def stage_menu_images(preview, layout_dir, layout, texconv):
+    """Create the TGA thumbnail/minimap and 1920x1080 JPEG loading screen.
+
+    Preserves the aspect ratio of AC track maps (``map.png`` / ``outline.png``)
+    and previews, crops transparent borders, composites onto a dark
+    16:9 canvas for ``<layout>_loading.jpg``, and creates ``<layout>mini.tga``,
+    ``<layout>Thmb.tga``, and ``<layout>icon.tga``.
+    """
+    import numpy as np
+
+    if not preview:
+        return 0
+    if not os.path.isfile(preview):
+        raise FileNotFoundError("track preview image not found: %s" % preview)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        decode_cmd = [texconv, "-y", "-ft", "tga", "-f", "B8G8R8A8_UNORM"]
+        dims = _png_dimensions(preview)
+        if dims and max(dims) > MAX_DECODE_DIM:
+            scale = MAX_DECODE_DIM / float(max(dims))
+            decode_cmd += [
+                "-w", str(max(1, int(round(dims[0] * scale)))),
+                "-h", str(max(1, int(round(dims[1] * scale)))),
+            ]
+        decode_cmd += ["-o", temp_dir, preview]
+        _run_texconv(decode_cmd, "decoding %s" % os.path.basename(preview))
+
+        decoded = os.path.join(
+            temp_dir, os.path.splitext(os.path.basename(preview))[0] + ".TGA"
+        )
+        if not os.path.isfile(decoded):
+            raise RuntimeError("texconv did not produce %s" % decoded)
+
+        bgra = _read_tga_bgra(decoded)
+        alpha = bgra[:, :, 3]
+        has_alpha = bool((alpha < 250).any() and (alpha > 16).any())
+        if has_alpha:
+            ys, xs = np.where(alpha > 8)
+            if len(xs):
+                bgra = bgra[ys.min():ys.max() + 1, xs.min():xs.max() + 1].copy()
+            visible = bgra[bgra[:, :, 3] > 32]
+            if len(visible):
+                luma = (
+                    0.114 * visible[:, 0]
+                    + 0.587 * visible[:, 1]
+                    + 0.299 * visible[:, 2]
+                )
+                if np.percentile(luma, 90) < 40.0:
+                    bgra[:, :, :3] = 255 - bgra[:, :, :3]
+
+        src_h, src_w = bgra.shape[:2]
+
+        # 1. Loading screen: 1920x1080 JPEG on dark charcoal background.
+        load_w, load_h = LOADING_SIZE
+        fit_w, fit_h = LOADING_FIT
+        load_scale = min(fit_w / float(src_w), fit_h / float(src_h))
+        dst_w = max(1, int(round(src_w * load_scale)))
+        dst_h = max(1, int(round(src_h * load_scale)))
+        load_src = bgra
+        if has_alpha and load_scale < 0.6:
+            radius = min(3, max(1, int(round(0.7 / load_scale)) // 2))
+            load_src = _dilate_track(bgra, radius)
+        load_resized = _resize_tga_bgra(
+            load_src, dst_w, dst_h, texconv, temp_dir, "loading"
+        )
+        canvas = _loading_background(load_w, load_h)
+        x0 = (load_w - dst_w) // 2
+        y0 = (load_h - dst_h) // 2
+        if has_alpha:
+            a = load_resized[:, :, 3:4].astype(np.float32) / 255.0
+            bg = canvas[y0:y0 + dst_h, x0:x0 + dst_w, :3].astype(np.float32)
+            fg = load_resized[:, :, :3].astype(np.float32)
+            canvas[y0:y0 + dst_h, x0:x0 + dst_w, :3] = np.clip(
+                fg * a + bg * (1.0 - a), 0.0, 255.0
+            ).astype(np.uint8)
+        else:
+            canvas[y0:y0 + dst_h, x0:x0 + dst_w, :3] = load_resized[:, :, :3]
+
+        load_tga = os.path.join(temp_dir, "loading_canvas.tga")
+        _write_tga_bgra(load_tga, canvas, bottom_up=False)
+        _run_texconv(
+            [texconv, "-y", "-ft", "jpg", "-wicq", "0.92", "-o", temp_dir, load_tga],
+            "creating %s_loading.jpg" % layout,
+        )
+        load_jpg = os.path.join(temp_dir, "loading_canvas.JPG")
+        if not os.path.isfile(load_jpg):
+            raise RuntimeError("texconv did not produce %s" % load_jpg)
+        shutil.copy2(load_jpg, os.path.join(layout_dir, layout + "_loading.jpg"))
+
+        # 2. Menu minimap and thumbnails: 252x249 32-bit bottom-up uncompressed TGA.
+        mini_w, mini_h = MINI_SIZE
+        mfit_w, mfit_h = MINI_FIT
+        mini_scale = min(mfit_w / float(src_w), mfit_h / float(src_h))
+        mdst_w = max(1, int(round(src_w * mini_scale)))
+        mdst_h = max(1, int(round(src_h * mini_scale)))
+        mini_src = bgra
+        if has_alpha and mini_scale < 0.5:
+            radius = min(4, max(1, int(round(1.0 / (mini_scale * 2.5)))))
+            mini_src = _dilate_track(bgra, radius)
+        mini_resized = _resize_tga_bgra(
+            mini_src, mdst_w, mdst_h, texconv, temp_dir, "mini"
+        )
+        mini_canvas = np.zeros((mini_h, mini_w, 4), dtype=np.uint8)
+        mx0 = (mini_w - mdst_w) // 2
+        my0 = (mini_h - mdst_h) // 2
+        mini_canvas[my0:my0 + mdst_h, mx0:mx0 + mdst_w] = mini_resized
+        mini_path = os.path.join(layout_dir, layout + "mini.tga")
+        _write_tga_bgra(mini_path, mini_canvas, bottom_up=True)
+        shutil.copy2(mini_path, os.path.join(layout_dir, layout + "Thmb.tga"))
+        shutil.copy2(mini_path, os.path.join(layout_dir, layout + "icon.tga"))
+    return 4
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir", help="out/<track> from convert_track.py")
@@ -216,6 +479,10 @@ def main():
                     help="rF2 ModDev Locations folder to copy into")
     ap.add_argument("--road-smoothness", type=float, default=None,
                     help="road surface smoothing in [0.0, 1.0] mapped to sigma in [0m, 8m] (0 disables, 0.5 -> 4m moderate, 1.0 -> 8m max; default from ac2rf2.ini)")
+    ap.add_argument("--preview",
+                    help="AC track map or UI preview image for menu/loading screens")
+    ap.add_argument("--texconv", default="texconv.exe",
+                    help="path to texconv.exe for converting menu images")
     args = ap.parse_args()
 
     import steam_paths
@@ -333,6 +600,9 @@ def main():
     write(os.path.join(lay_dir, layout + ".gdb"),
           GDB.format(venue=venue, layout=layout, km=lap_km,
                      mi=lap_km * 0.621371, hour=args.hour))
+    menu_images = stage_menu_images(args.preview, lay_dir, layout, args.texconv)
+    if menu_images:
+        print("  menu images %d (thumbnail and loading screen)" % menu_images)
 
     tdf = os.path.join(out_dir, venue + ".tdf")
     if os.path.exists(tdf):

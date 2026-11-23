@@ -183,6 +183,47 @@ def blender_stage(pre, post, gmt_dir, jobs):
     return "\n".join(logs)
 
 
+def _usable_image(path, min_dim=32):
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+    except OSError:
+        return False
+    if len(head) >= 24 and head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR":
+        w, h = struct.unpack_from(">II", head, 16)
+        if min(w, h) < min_dim:
+            return False
+    return True
+
+
+def track_preview(track_dir, layout):
+    """Find the best AC track map or preview image for menu/loading screens.
+
+    Prefer AC's rasterized track map (``map.png``) and UI outline
+    (``outline.png``) so rF2's loading screen and menu minimap match stock
+    tracks; fall back to ``preview.png`` when no usable map exists.
+    """
+    candidates = []
+    if layout:
+        candidates.extend((
+            os.path.join(track_dir, layout, "map.png"),
+            os.path.join(track_dir, "ui", layout, "outline.png"),
+        ))
+    candidates.extend((
+        os.path.join(track_dir, "map.png"),
+        os.path.join(track_dir, "ui", "outline.png"),
+    ))
+    if layout:
+        candidates.extend((
+            os.path.join(track_dir, "ui", layout, "preview.png"),
+            os.path.join(track_dir, layout, "ui", "preview.png"),
+        ))
+    candidates.append(os.path.join(track_dir, "ui", "preview.png"))
+    return next((path for path in candidates if _usable_image(path)), None)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("track_dir")
@@ -320,6 +361,11 @@ def main():
     cmd = [py, "finalize_track.py", out, "--hour", args.hour,
            "--ambient", args.scene_ambient,
            "--road-smoothness", repr(args.road_smoothness)]
+    preview = track_preview(args.track_dir, args.layout)
+    if preview:
+        cmd += ["--preview", preview, "--texconv", steam_paths.TEXCONV]
+    else:
+        print("   no AC track map or preview image found; menu images will be omitted")
     if args.install:
         cmd += ["--install", args.install]
     run(cmd)
