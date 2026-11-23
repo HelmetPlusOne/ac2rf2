@@ -33,6 +33,7 @@ import numpy as np
 
 from steam_paths import TEXCONV  # in whichever Steam library has rF2
 from parallel import default_jobs, ordered_map
+from convert_track import fit_tex_stem
 CHANNELS = ("R", "G", "B", "A")
 
 # Resizing or building mips, texconv filters colour weighted by alpha unless
@@ -526,7 +527,7 @@ def dim_copy(disk, scale, tex_dir, tmp, texconv):
         return None
     alpha = img[:, :, 3] if float(img[:, :, 3].std()) > 0.01 \
         or float(img[:, :, 3].mean()) < 0.99 else None
-    stem = os.path.splitext(disk)[0] + "_d%02d" % int(round(scale * 100))
+    stem = fit_tex_stem(os.path.splitext(disk)[0], "_d%02d" % int(round(scale * 100)))
     return write_dds(stem, np.clip(img[:, :, :3] * scale, 0.0, 1.0), alpha,
                      tex_dir, tmp, texconv)
 
@@ -578,11 +579,12 @@ def coverage_copy(disk, ref, tex_dir, tmp, texconv, rgb_scale=1.0, alpha_disk=No
     mapped = np.where(above,
                       t + (a - r) / max(1.0 - r, 1e-6) * (1.0 - t),
                       a * ((t - 1.0 / 255.0) / max(r, 1e-6)))
-    stem = os.path.splitext(disk)[0] + "_a%d" % ref
+    suffix = "_a%d" % ref
     if alpha_disk and alpha_disk != disk:
-        stem += "_" + os.path.splitext(alpha_disk)[0]
+        suffix += "_" + os.path.splitext(alpha_disk)[0]
     if rgb_scale != 1.0:
-        stem += "_d%02d" % int(round(rgb_scale * 100))
+        suffix += "_d%02d" % int(round(rgb_scale * 100))
+    stem = fit_tex_stem(os.path.splitext(disk)[0], suffix)
     return write_dds(stem, np.clip(img[:, :, :3] * rgb_scale, 0.0, 1.0),
                      np.clip(mapped, 0.0, 1.0), tex_dir, tmp, texconv,
                      keep_coverage=t)
@@ -645,7 +647,7 @@ def blend_details(mat, name, probe, tex_dir, tmp, files, size, texconv):
     if have > 1e-6:
         dev *= (want / have)
     grain = np.clip(0.5 + dev, 0.0, 1.0)
-    out = write_dds(name + "_detail", np.dstack([grain, grain, grain]), None,
+    out = write_dds(fit_tex_stem(name, "_detail"), np.dstack([grain, grain, grain]), None,
                     tex_dir, tmp, texconv)
     if out:
         print("  %-22s neutral grain, contrast %.3f, from %s" % (name[:22], want, ", ".join(
@@ -681,7 +683,7 @@ def detail_normal(name, height, tex_dir, tmp, texconv):
     ln = np.sqrt(nx * nx + ny * ny + nz * nz)
     rgb = np.dstack([nx / ln, ny / ln, nz / ln]) * 0.5 + 0.5
     tilt = np.degrees(np.arccos(np.clip(nz / ln, -1, 1)))
-    out = write_dds(name + "_detail_nm", rgb, None, tex_dir, tmp, texconv)
+    out = write_dds(fit_tex_stem(name, "_detail_nm"), rgb, None, tex_dir, tmp, texconv)
     if out:
         print("  %-22s detail normal map, mean tilt %.1f deg" % (name[:22], float(tilt.mean())))
     return out
@@ -896,7 +898,7 @@ def road_spec_map(mat, tex_dir, tmp, files, texconv, cap=2048):
     if img is None or img.shape[2] < 4 or float(img[:, :, 3].std()) < 0.01:
         return None
     a = img[:, :, 3:4]
-    return write_dds(mat["rf2_material"] + "_spec", np.repeat(a, 3, axis=2),
+    return write_dds(fit_tex_stem(mat["rf2_material"], "_spec"), np.repeat(a, 3, axis=2),
                      None, tex_dir, tmp, texconv)
 
 
@@ -906,6 +908,7 @@ def write_dds(stem, rgb, alpha, tex_dir, tmp, texconv, keep_coverage=None):
     keep_coverage, a 0..1 alpha test reference, rebuilds the mip chain so the
     share of texels passing that threshold stays what it is at full size.
     """
+    stem = fit_tex_stem(stem)
     tga = os.path.join(tmp, stem + ".tga")
     write_tga(tga, rgb, alpha)
     extra = ["-keepcoverage", "%.4f" % keep_coverage] if keep_coverage else []
@@ -1016,7 +1019,7 @@ def bake_multimap_tint(mat, det_name, tex_dir, tmp, cap, files, texconv):
     weight = (1.0 - base[:, :, 3])[:, :, None]
     out = np.clip(base[:, :, :3] * (1.0 - weight + weight * det_rgb), 0.0, 1.0)
     alpha = blend_alpha(mat, base, tex_dir, tmp, files, w, h)
-    return write_dds(mat["rf2_material"] + "_baked", out, alpha, tex_dir, tmp, texconv)
+    return write_dds(fit_tex_stem(mat["rf2_material"], "_baked"), out, alpha, tex_dir, tmp, texconv)
 
 
 def write_base(mat, det_name, tex_dir, tmp, cap, files, texconv):
@@ -1052,7 +1055,7 @@ def write_base(mat, det_name, tex_dir, tmp, cap, files, texconv):
 
     alpha = blend_alpha(mat, base, tex_dir, tmp, files, w, h)
 
-    stem = mat["rf2_material"] + "_base"
+    stem = fit_tex_stem(mat["rf2_material"], "_base")
     tga = os.path.join(tmp, stem + ".tga")
     write_tga(tga, out, alpha)
     run([texconv, "-f", "BC1_UNORM" if alpha is None else "BC3_UNORM",
@@ -1142,7 +1145,7 @@ def main():
                 got = bake_material(m, tex_dir, tmp, args.size, args.density,
                                     args.grain, lowfreq=True, second_mean=dmean)
                 if got is not None:
-                    composed = write_dds(name + "_base", got[0], got[2],
+                    composed = write_dds(fit_tex_stem(name, "_base"), got[0], got[2],
                                          tex_dir, tmp, args.texconv)
             else:
                 composed = write_base(m, det, tex_dir, tmp, args.size, files,
@@ -1213,7 +1216,7 @@ def main():
             print("  %-22s skipped (missing base, mask or details)" % name[:22])
             continue
         rgb, repeat, alpha = got
-        final = write_dds(name + "_baked", rgb, alpha, tex_dir, tmp, args.texconv)
+        final = write_dds(fit_tex_stem(name, "_baked"), rgb, alpha, tex_dir, tmp, args.texconv)
         if final is None:
             print("  %-22s texconv failed" % name[:22])
             continue
@@ -1264,7 +1267,7 @@ def main():
                     rel = float(lum.std() / max(lum.mean(), 1e-3))
                     k = min(1.0, DETAIL_MAX_CONTRAST / max(rel, 1e-3))
                     mean = rgb.reshape(-1, 3).mean(axis=0)
-                    out = write_dds(os.path.splitext(det)[0] + "_soft",
+                    out = write_dds(fit_tex_stem(os.path.splitext(det)[0], "_soft"),
                                     mean + (rgb - mean) * k, alpha,
                                     tex_dir, tmp, args.texconv)
                     evened[det] = out and (out, "%.2f" % rel, "%.2f" % (rel * k))
@@ -1301,7 +1304,7 @@ def main():
                 img = to_rgba(path, tmp, sz[0] // 2, sz[1] // 2)
                 if img is not None:
                     alpha = img[:, :, 3] if float(img[:, :, 3].std()) > 0.01 else None
-                    halved[det] = write_dds(os.path.splitext(det)[0] + "_half",
+                    halved[det] = write_dds(fit_tex_stem(os.path.splitext(det)[0], "_half"),
                                             img[:, :, :3], alpha, tex_dir, tmp,
                                             args.texconv)
         if halved[det]:

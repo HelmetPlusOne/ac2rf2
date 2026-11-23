@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import json
+import hashlib
 import argparse
 import configparser
 import shutil
@@ -201,6 +202,32 @@ def patch_tdf(template, grip, drivable=()):
 
 
 
+# GMT texture records store a 64-byte ASCII filename and Blender IDs cap at 63
+# chars (io_rf2_gmt_release truncates texture names at 62 chars, chopping off
+# ".dds" and causing rF2 "Error loading texture ..."). Capping every
+# texture filename (including extension) to 58 chars keeps room for Blender's
+# ".001" suffixes and GMT's 64-byte buffer.
+MAX_TEX_FILENAME = 58
+
+
+def fit_tex_stem(stem, suffix="", ext=".dds", max_len=MAX_TEX_FILENAME):
+    """Shorten stem+suffix deterministically so stem+suffix+ext <= max_len.
+
+    Preserves the trailing suffix (e.g. _baked, _base, _a102, _d80) so later
+    stages that match suffixes continue to work while keeping names unique.
+    """
+    full = stem + suffix
+    limit = max_len - len(ext)
+    if len(full) <= limit:
+        return full
+    digest = hashlib.sha1(full.casefold().encode("utf-8")).hexdigest()[:8]
+    keep = limit - len(suffix) - 9  # "_" + 8-char hash + suffix
+    if keep >= 1:
+        prefix = stem[:keep].rstrip("_") or "tex"
+        return "%s_%s%s" % (prefix, digest, suffix)
+    return "tex_%s%s" % (digest, suffix[:max(0, limit - 12)])
+
+
 def texture_filenames(names):
     """Map each AC texture name to a unique, safe filename on disk.
 
@@ -220,12 +247,13 @@ def texture_filenames(names):
         base, ext = os.path.splitext(name)
         if ext.lower() in IMAGE_EXTENSIONS:
             ext = ".dds"
-        cand = safe(base) + ext
+        clean = safe(base)
+        cand = fit_tex_stem(clean, ext=ext) + ext
         if cand.lower() in taken:
             i = 2
-            while ("%s_%d%s" % (safe(base), i, ext)).lower() in taken:
+            while (fit_tex_stem(clean, "_%d" % i, ext=ext) + ext).lower() in taken:
                 i += 1
-            cand = "%s_%d%s" % (safe(base), i, ext)
+            cand = fit_tex_stem(clean, "_%d" % i, ext=ext) + ext
         taken.add(cand.lower())
         out[name] = cand
     return out

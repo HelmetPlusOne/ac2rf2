@@ -64,10 +64,38 @@ def material_colours(data, shader_at):
     return f(-80), f(-64)
 
 
+def _gmt_texture_names(b):
+    """Exact texture names from a v2.52 rF2 GMT material table, or None."""
+    if len(b) < 0x378 or b[0x1BC:0x1CC] != bytes.fromhex("c8cfd2d8ced8e6c3d6ded8bebbabc190"):
+        return None
+    mat_off = struct.unpack_from("<I", b, 0)[0] + 4
+    if mat_off + 4 > len(b):
+        return None
+    nmat = struct.unpack_from("<I", b, mat_off)[0]
+    pos = mat_off + 4
+    names = set()
+    for _ in range(nmat):
+        if pos + 260 > len(b):
+            return None
+        ntex = struct.unpack_from("<I", b, pos + 256)[0]
+        pos += 260
+        for _ in range(ntex):
+            if pos + 180 > len(b):
+                return None
+            raw = b[pos:pos + 64].split(b"\x00", 1)[0]
+            if raw:
+                names.add(raw)
+            pos += 180
+    return names
+
+
 def read_gmt(path):
-    b = open(path, "rb").read()
+    with open(path, "rb") as f:
+        b = f.read()
+    parsed_texs = _gmt_texture_names(b)
     out = {"shader": shader_of(b),
-           "textures": set(re.findall(rb"[A-Za-z0-9_\-]+\.dds", b)),
+           "textures": (parsed_texs if parsed_texs is not None
+                        else set(re.findall(rb"[A-Za-z0-9_\-]+\.dds", b))),
            "strings": set(x.group().decode()
                           for x in re.finditer(rb"[ -~]{3,}", b)),
            "materials": [], "alpha_refs": {}}

@@ -85,6 +85,26 @@ class Kn5Tests(unittest.TestCase):
             self.assertEqual(len(cams), 1)
             self.assertEqual(cams[0]["pos"], [-1.0, 2.0, 3.0])
 
+    def test_long_texture_filenames_stay_within_gmt_limit(self):
+        import convert_track
+
+        long_a = "veg_nurb_tree_pine_b_xlarge_background_002_diff_packmaskNEW.dds"
+        long_b = "veg_nurb_tree_pine_b_xlarge_background_002_diff_packmaskOLD.dds"
+        mapped = convert_track.texture_filenames([long_a, long_b, "short.dds"])
+        self.assertEqual(mapped["short.dds"], "short.dds")
+        for orig in (long_a, long_b):
+            self.assertLessEqual(len(mapped[orig]), convert_track.MAX_TEX_FILENAME)
+            self.assertTrue(mapped[orig].endswith(".dds"))
+        self.assertNotEqual(mapped[long_a].lower(), mapped[long_b].lower())
+
+        # Suffixes appended in bake_layers keep total filename <= MAX_TEX_FILENAME
+        # while preserving the trailing suffix (_a102, _a102_d80, _baked, _base).
+        stem = os.path.splitext(mapped[long_a])[0]
+        for suf in ("_a102", "_a102_d80", "_baked", "_base", "_detail_nm"):
+            out = convert_track.fit_tex_stem(stem, suf) + ".dds"
+            self.assertLessEqual(len(out), convert_track.MAX_TEX_FILENAME)
+            self.assertTrue(out.endswith(suf + ".dds"))
+
 
 if __name__ == "__main__":
     unittest.main()
