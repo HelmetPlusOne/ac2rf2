@@ -216,9 +216,24 @@ def main():
                     help="package the converted track into MAS archives and an RFCMP component (default)")
     ap.add_argument("--no-package", "--skip-package", dest="package", action="store_false",
                     help="skip packaging into MAS archives and RFCMP")
+    ap.add_argument("--road-smoothness", type=float, default=None,
+                    help="road surface smoothing in [0.0, 1.0] mapped to sigma in [0m, 8m] (0 disables, 0.5 -> 4m moderate, 1.0 -> 8m max; overrides ac2rf2.ini)")
     args = ap.parse_args()
     global TOTAL_STEPS
     TOTAL_STEPS = 8 if args.package else 7
+
+    import steam_paths
+    try:
+        config = steam_paths.load_config()
+    except ValueError as exc:
+        raise SystemExit("config error: %s" % exc)
+    if args.road_smoothness is None:
+        args.road_smoothness = config["road_smoothness"]
+    else:
+        try:
+            steam_paths.road_smoothness_to_sigma(args.road_smoothness)
+        except ValueError as exc:
+            raise SystemExit("--road-smoothness: %s" % exc)
     # Every step is a process of its own that finds the games through
     # steam_paths, which reads these, so they are set before anything imports it.
     if args.rf2:
@@ -303,7 +318,8 @@ def main():
 
     step(7, "scene, database and install")
     cmd = [py, "finalize_track.py", out, "--hour", args.hour,
-           "--ambient", args.scene_ambient]
+           "--ambient", args.scene_ambient,
+           "--road-smoothness", repr(args.road_smoothness)]
     if args.install:
         cmd += ["--install", args.install]
     run(cmd)

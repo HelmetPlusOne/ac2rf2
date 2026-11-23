@@ -139,6 +139,51 @@ class Kn5Tests(unittest.TestCase):
         self.assertNotEqual(first.casefold(), second.casefold())
         self.assertLessEqual(len(second), finalize_track.MAX_INSTANCE_NAME_LENGTH)
 
+    def test_road_smoothness_to_sigma_maps_uniformly(self):
+        import steam_paths
+
+        self.assertEqual(steam_paths.road_smoothness_to_sigma(0.0), 0.0)
+        self.assertEqual(steam_paths.road_smoothness_to_sigma(0.5), 4.0)
+        self.assertEqual(steam_paths.road_smoothness_to_sigma(1.0), 8.0)
+        self.assertEqual(steam_paths.road_smoothness_to_sigma(0.25), 2.0)
+        with self.assertRaises(ValueError):
+            steam_paths.road_smoothness_to_sigma(-0.1)
+        with self.assertRaises(ValueError):
+            steam_paths.road_smoothness_to_sigma(1.1)
+
+    def test_smooth_positions_mls_reproduces_quadratic_surfaces_exact(self):
+        import road_smooth
+        import numpy as np
+
+        xs = np.linspace(-15.0, 15.0, 21)
+        zs = np.linspace(-15.0, 15.0, 21)
+        gx, gz = np.meshgrid(xs, zs)
+        x = gx.ravel()
+        z = gz.ravel()
+        # Quadratic surface: Y = 2.0 + 0.1*X - 0.05*Z + 0.003*X^2 - 0.002*X*Z + 0.004*Z^2
+        y = 2.0 + 0.1 * x - 0.05 * z + 0.003 * x * x - 0.002 * x * z + 0.004 * z * z
+        pos = np.column_stack((x, y, z))
+
+        # Build grid triangulation
+        tris = []
+        nx, nz = len(xs), len(zs)
+        for r in range(nz - 1):
+            for c in range(nx - 1):
+                i0 = r * nx + c
+                i1 = i0 + 1
+                i2 = (r + 1) * nx + c
+                i3 = i2 + 1
+                tris.append((i0, i1, i2))
+                tris.append((i1, i3, i2))
+
+        smoothed, stats = road_smooth.smooth_positions_mls(pos, tris, sigma=4.0)
+        self.assertEqual(stats["verts"], len(pos))
+        # Interior points must match quadratic surface to < 1e-4 m
+        interior = (np.abs(x) < 8.0) & (np.abs(z) < 8.0)
+        self.assertTrue(interior.any())
+        max_err = float(np.abs(smoothed[interior, 1] - pos[interior, 1]).max())
+        self.assertLess(max_err, 1e-4)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -214,7 +214,21 @@ def main():
                     help="time of day for every session, e.g. 12:00")
     ap.add_argument("--install", default=None,
                     help="rF2 ModDev Locations folder to copy into")
+    ap.add_argument("--road-smoothness", type=float, default=None,
+                    help="road surface smoothing in [0.0, 1.0] mapped to sigma in [0m, 8m] (0 disables, 0.5 -> 4m moderate, 1.0 -> 8m max; default from ac2rf2.ini)")
     args = ap.parse_args()
+
+    import steam_paths
+    try:
+        _cfg = steam_paths.load_config()
+    except ValueError as exc:
+        raise SystemExit("config error: %s" % exc)
+    if args.road_smoothness is None:
+        args.road_smoothness = _cfg["road_smoothness"]
+    try:
+        eff_road_smooth_sigma = steam_paths.road_smoothness_to_sigma(args.road_smoothness)
+    except ValueError as exc:
+        raise SystemExit("--road-smoothness: %s" % exc)
 
     out_dir = os.path.abspath(args.out_dir)
     venue = os.path.basename(out_dir)
@@ -225,6 +239,7 @@ def main():
     # Take the draw flags from the mapping rather than the export record, so
     # changing what is drawn does not mean re-exporting every mesh.
     mapping = os.path.join(out_dir, "material_map.json")
+    mdata = None
     cutouts = {}
     if os.path.exists(mapping):
         mdata = json.load(open(mapping))
@@ -344,6 +359,19 @@ def main():
         old_bytes += ob
         new_bytes += nb
         n_gmt += 1
+
+    if eff_road_smooth_sigma > 0.0:
+        import road_smooth
+        rs = road_smooth.smooth_staged_road_gmts(
+            gmts, exported, mdata=mdata, sigma=eff_road_smooth_sigma)
+        if rs["meshes"]:
+            print("  road smooth %d meshes, %d/%d verts (road_smoothness=%s, effective road_smooth_sigma=%sm, dY rms=%.2fmm, max=%.1fmm)"
+                  % (rs["meshes"], rs["smoothed"], rs["verts"],
+                     args.road_smoothness, eff_road_smooth_sigma,
+                     rs["dy_rms_mm"], rs["dy_max_mm"]))
+    else:
+        print("  road smooth disabled (road_smoothness=%s, effective road_smooth_sigma=0.0m)"
+              % (args.road_smoothness,))
 
     n_tex = 0
     tex_dir = os.path.join(out_dir, "textures")
