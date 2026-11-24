@@ -584,6 +584,9 @@ def main():
         coll = "True" if row["physical"] else "False"
         if row["physical"]:
             phys += 1
+        # Timing strips collide but must not act as ground, or the car sits on
+        # them instead of the road.
+        hat = "False" if row.get("timing") else coll
         # Timing gates and collision-only shells must never be rendered. Check
         # timing first because blender_stage records timing rows without a
         # "render" key (so row.get("render", True) is True).

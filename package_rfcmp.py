@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 import steam_paths
@@ -201,10 +202,29 @@ def build_rfcmp_via_mas2(mas2_exe, cmpinfo_content, target_rfcmp_path, timeout=1
             raise RuntimeError("Could not find MAS2 main window")
         print(f"MAS2 main HWND: {mas2_hwnd}", flush=True)
 
-        # 2. Open 'rFactor2 Mod Packager' dialog (Command ID 32824) and click button 1109 ("Create Single Cmp Package")
+        # 2. Find Toolbar and click button 6 ("Create package") to open Mod Packager
+        tb_hwnd = None
+        def find_tb(hwnd, _):
+            nonlocal tb_hwnd
+            cbuf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, cbuf, 256)
+            if cbuf.value == "ToolbarWindow32":
+                tb_hwnd = hwnd
+                return False
+            return True
+        user32.EnumChildWindows(mas2_hwnd, WNDENUMPROC(find_tb), 0)
+        if not tb_hwnd:
+            raise RuntimeError("Could not find ToolbarWindow32")
+
         btn1109 = None
         for attempt in range(10):
-            user32.PostMessageW(mas2_hwnd, WM_COMMAND, 32824, 0)
+            lparam = (11 << 16) | 132
+            user32.SendMessageW(tb_hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+            def send_up(thwnd=tb_hwnd, lp=lparam):
+                user32.SendMessageW(thwnd, WM_LBUTTONUP, 0, lp)
+            threading.Thread(target=send_up, daemon=True).start()
+            print("Clicked Toolbar 'Create package' button", flush=True)
+
             for _ in range(10):
                 time.sleep(0.1)
                 def find_packager(hwnd, _):
