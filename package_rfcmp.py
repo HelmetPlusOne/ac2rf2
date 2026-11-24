@@ -3,10 +3,11 @@
 Normal rFactor 2 (and online dedicated servers) requires tracks to be packaged
 into MAS archives inside an RFCMP component file. This script automates that
 entire pipeline headlessly:
-1. Compiles the three MAS archives (assets, materials, layout) using ModMgr.exe.
-2. Writes the component metadata to %APPDATA%\\cmpinfo.dat.
-3. Automates MAS2.exe via Win32 messages (ctypes) to build the .rfcmp package.
-4. Optionally installs the package into rFactor 2 via ModMgr.exe -i.
+1. Compiles the MAS archives (assets, materials, layout) using ModMgr.exe.
+2. Enforces the 4 GiB MAS / RFCMP 32-bit container limit before invoking MAS2.exe.
+3. Writes the component metadata to %APPDATA%\\cmpinfo.dat.
+4. Automates MAS2.exe via Win32 WM_COMMAND messages (ctypes) to build the .rfcmp package.
+5. Optionally installs the package into rFactor 2 via ModMgr.exe -i.
 
 Usage:
     python package_rfcmp.py <track_or_rf2_stage_dir> [--name "<Track Name>"] [--version 1.0] [--install]
@@ -22,7 +23,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 
 import steam_paths
@@ -37,11 +37,93 @@ user32.PostMessageW.restype = wintypes.BOOL
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
+WM_CLOSE = 0x0010
 WM_COMMAND = 0x0111
-WM_LBUTTONDOWN = 0x0201
-WM_LBUTTONUP = 0x0202
-MK_LBUTTON = 0x0001
-BM_CLICK = 0x00F5
+
+# Measured from MAS2.exe (2.9.4.0) via TB_GETBUTTON and dialog control inspection.
+ID_CREATE_PACKAGE = 32824   # Main frame command: open "Mod Packager"
+ID_SINGLE_CMP_BTN = 1109    # Mod Packager: "Create Single Cmp Package"
+ID_PACKAGE_BTN = 1056       # Create Component Package: "Package"
+ID_STATUS_STATIC = 1120     # Create Component Package: status label
+
+# XOR-encoded GMOTOR20MAS / GMOTOR20PKG magic headers. Both use 32-bit offsets (4 GiB max).
+MAS_MAGIC = b"f1\x05D }?E-7\x08Z)?\x08U"
+PKG_MAGIC = b"f1\x05D }?X'#\x08Z)?\x08U"
+
+MAX_MAS_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB
+# .rfcmp wraps all .mas files uncompressed plus ~1.4 KB header/manifest; keep 4 MiB headroom.
+MAX_RFCMP_PAYLOAD_BYTES = MAX_MAS_BYTES - (4 * 1024 * 1024)
+
+
+class _Mas2StartupError(RuntimeError):
+    """Transient error while launching MAS2.exe or navigating to its Packager dialog."""
+
+
+def _fmt_gb(num_bytes):
+    return f"{num_bytes / (1024.0 ** 3):.2f} GB"
+
+
+def is_valid_mas_file(path):
+    """True if path is a non-empty file starting with the GMOTOR20MAS header."""
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        if os.path.getsize(path) < len(MAS_MAGIC):
+            return False
+        with open(path, "rb") as f:
+            return f.read(len(MAS_MAGIC)) == MAS_MAGIC
+    except OSError:
+        return False
+
+
+def validate_mas_files_for_rfcmp(mas_files, stage_dir=None, require_exists=False):
+    """Ensure individual and combined MAS file sizes fit within rF2's 4 GiB limit.
+
+    Returns total size in bytes of existing MAS files. Raises RuntimeError before
+    MAS2.exe is launched if any MAS file or their combined payload reaches 4 GiB.
+    """
+    entries = []
+    total_bytes = 0
+    for mf in mas_files:
+        if not os.path.isfile(mf):
+            if require_exists:
+                raise RuntimeError(f"Required MAS archive is missing: {mf}")
+            continue
+        sz = os.path.getsize(mf)
+        if sz == 0:
+            raise RuntimeError(f"MAS archive is empty (0 bytes): {mf}")
+        entries.append((mf, sz))
+        total_bytes += sz
+
+    oversized = [(mf, sz) for mf, sz in entries if sz >= MAX_MAS_BYTES]
+    if oversized or total_bytes >= MAX_RFCMP_PAYLOAD_BYTES:
+        detail_lines = [f"  - {os.path.basename(mf)}: {_fmt_gb(sz)} ({sz:,} bytes)" for mf, sz in entries]
+        reason = (
+            f"MAS archive '{os.path.basename(oversized[0][0])}' is {_fmt_gb(oversized[0][1])}"
+            if oversized
+            else f"Combined MAS archives total {_fmt_gb(total_bytes)}"
+        )
+        hint_stage = f"\nStaged track files remain available at: {stage_dir}" if stage_dir else ""
+        raise RuntimeError(
+            f"{reason}, exceeding rFactor 2's 4.00 GB MAS/RFCMP limit. "
+            f"Skipping RFCMP packaging because MAS2.exe cannot package archives >= 4 GB.\n"
+            + "\n".join(detail_lines)
+            + "\nTo reduce track size, lower texture_scale (e.g. 0.5 or 0.25) and/or enable "
+            "mesh_coarsening in ac2rf2.ini (or via --texture-scale / --mesh-coarsening)."
+            + hint_stage
+        )
+    return total_bytes
+
+
+def _parse_cmpinfo_mas_files(cmpinfo_content):
+    """Extract MASFile= paths from cmpinfo.dat text."""
+    out = []
+    for line in cmpinfo_content.splitlines():
+        if line.startswith("MASFile="):
+            val = line.split("=", 1)[1].strip()
+            if val:
+                out.append(val)
+    return out
 
 
 def find_modmgr(rf2_dir):
@@ -133,29 +215,331 @@ def read_track_metadata(stage_dir, default_name=None, default_ver="1.0"):
 
 
 def build_mas_archive(modmgr_exe, output_mas_path, file_list):
-    """Compile a .mas file using ModMgr.exe -m with a temporary directory."""
-    if not file_list:
+    """Compile a .mas file using ModMgr.exe -m with a hardlinked staging directory."""
+    existing = [src for src in file_list if os.path.isfile(src)]
+    if not existing:
         return False
     output_mas_path = os.path.abspath(output_mas_path)
-    os.makedirs(os.path.dirname(output_mas_path), exist_ok=True)
-    temp_dir = tempfile.mkdtemp(prefix="rf2_mas_")
+    out_parent = os.path.dirname(output_mas_path)
+    os.makedirs(out_parent, exist_ok=True)
+
+    # Remove any previous archive so a failed ModMgr run can never look like success.
+    if os.path.isfile(output_mas_path):
+        try:
+            os.remove(output_mas_path)
+        except OSError:
+            pass
+
+    # Stage on the same volume as output_mas_path so os.link avoids multi-GB copies.
+    temp_dir = tempfile.mkdtemp(prefix="_rf2_mas_", dir=out_parent)
     try:
-        for src in file_list:
-            if os.path.isfile(src):
-                dst = os.path.join(temp_dir, os.path.basename(src))
+        for src in existing:
+            dst = os.path.join(temp_dir, os.path.basename(src))
+            if os.path.exists(dst):
+                os.remove(dst)
+            try:
+                os.link(src, dst)
+            except OSError:
                 shutil.copy2(src, dst)
+
         cmd = [modmgr_exe, f"-m{output_mas_path}", os.path.join(temp_dir, "*.*")]
         proc = subprocess.run(cmd, cwd=temp_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if os.path.isfile(output_mas_path) and os.path.getsize(output_mas_path) > 0:
-            return True
-        else:
-            raise RuntimeError(f"ModMgr failed to generate MAS: {proc.stderr.decode(errors='ignore')}")
+        if proc.returncode != 0 or not is_valid_mas_file(output_mas_path):
+            if os.path.isfile(output_mas_path):
+                try:
+                    os.remove(output_mas_path)
+                except OSError:
+                    pass
+            stderr = proc.stderr.decode(errors="ignore").strip()
+            stdout = proc.stdout.decode(errors="ignore").strip()
+            msg = stderr or stdout or "no output"
+            raise RuntimeError(
+                f"ModMgr failed to generate {os.path.basename(output_mas_path)} "
+                f"(exit code {proc.returncode}): {msg}"
+            )
+
+        mas_size = os.path.getsize(output_mas_path)
+        if mas_size >= MAX_MAS_BYTES:
+            raise RuntimeError(
+                f"Generated MAS archive '{os.path.basename(output_mas_path)}' is "
+                f"{_fmt_gb(mas_size)} ({mas_size:,} bytes), exceeding rFactor 2's 4.00 GB limit. "
+                "Lower texture_scale or enable mesh_coarsening in ac2rf2.ini."
+            )
+        return True
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def build_rfcmp_via_mas2(mas2_exe, cmpinfo_content, target_rfcmp_path, timeout=120):
-    """Launch MAS2.exe and automate component creation using Win32 messages."""
+def _enum_pid_windows(target_pid):
+    """Return list of (hwnd, class_name, title, visible) for top-level windows of target_pid."""
+    windows = []
+
+    def cb(hwnd, _):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == target_pid:
+            cbuf = ctypes.create_unicode_buffer(256)
+            tbuf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, cbuf, 256)
+            user32.GetWindowTextW(hwnd, tbuf, 256)
+            vis = bool(user32.IsWindowVisible(hwnd))
+            windows.append((hwnd, cbuf.value, tbuf.value, vis))
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(cb), 0)
+    return windows
+
+
+def _find_child_by_id(parent_hwnd, ctrl_id):
+    found = None
+
+    def cb(ch, _):
+        nonlocal found
+        if user32.GetDlgCtrlID(ch) == ctrl_id:
+            found = ch
+            return False
+        return True
+
+    user32.EnumChildWindows(parent_hwnd, WNDENUMPROC(cb), 0)
+    return found
+
+
+def _collect_dialog_text(hwnd):
+    """Collect title and visible child static/text strings of a Win32 dialog."""
+    parts = []
+    tbuf = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(hwnd, tbuf, 512)
+    if tbuf.value.strip():
+        parts.append(tbuf.value.strip())
+
+    def cb(ch, _):
+        cbuf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(ch, cbuf, 64)
+        if cbuf.value.lower() in ("static", "edit"):
+            txt = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(ch, txt, 512)
+            s = txt.value.strip()
+            if s and s not in parts:
+                parts.append(s)
+        return True
+
+    user32.EnumChildWindows(hwnd, WNDENUMPROC(cb), 0)
+    return " | ".join(parts)
+
+
+def _is_error_text(text):
+    low = text.lower()
+    if "no errors" in low or "complete with no errors" in low:
+        return False
+    return any(
+        tok in low
+        for tok in ("error", "failed", "unable", "cannot", "corrupt", "too large", "not enough", "invalid")
+    )
+
+
+def _run_mas2_once(mas2_exe, target_rfcmp_path, total_mas_bytes, timeout, startup_timeout=30.0):
+    """Single MAS2.exe automation attempt using Win32 WM_COMMAND messages."""
+    mas2_cwd = os.path.dirname(mas2_exe)
+    proc = subprocess.Popen([mas2_exe], cwd=mas2_cwd)
+    mas2_hwnd = None
+
+    try:
+        # 1. Wait for MAS2 main window (visible Afx: frame)
+        deadline = time.monotonic() + startup_timeout
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise _Mas2StartupError(
+                    f"MAS2.exe exited during startup with exit code {proc.returncode}"
+                )
+            for hwnd, cls, _title, vis in _enum_pid_windows(proc.pid):
+                if cls.startswith("Afx:") and vis:
+                    mas2_hwnd = hwnd
+                    break
+            if mas2_hwnd:
+                break
+            time.sleep(0.1)
+
+        if not mas2_hwnd:
+            seen = _enum_pid_windows(proc.pid)
+            summary = ", ".join(f"{cls!r}({title!r}, vis={vis})" for _, cls, title, vis in seen) or "none"
+            raise _Mas2StartupError(
+                f"Could not find MAS2 main window within {startup_timeout:.0f}s (windows seen: {summary})"
+            )
+        print(f"MAS2 main HWND: {mas2_hwnd}", flush=True)
+        time.sleep(0.2)
+
+        # 2. Open "Mod Packager" directly via MFC command ID 32824 (avoids ToolbarWindow32 mouse-click races)
+        packager_dlg = None
+        btn1109 = None
+        step_deadline = time.monotonic() + 15.0
+        next_post = 0.0
+        while time.monotonic() < step_deadline:
+            if proc.poll() is not None:
+                raise _Mas2StartupError(
+                    f"MAS2.exe exited while opening Mod Packager (exit code {proc.returncode})"
+                )
+            now = time.monotonic()
+            if now >= next_post:
+                user32.PostMessageW(mas2_hwnd, WM_COMMAND, ID_CREATE_PACKAGE, 0)
+                if next_post == 0.0:
+                    print("Sent 'Create package' command to MAS2", flush=True)
+                next_post = now + 2.0
+
+            for hwnd, cls, title, vis in _enum_pid_windows(proc.pid):
+                if cls == "#32770" and "Mod Packager" in title and vis:
+                    ch = _find_child_by_id(hwnd, ID_SINGLE_CMP_BTN)
+                    if ch:
+                        packager_dlg = hwnd
+                        btn1109 = ch
+                        break
+            if packager_dlg and btn1109:
+                break
+            time.sleep(0.1)
+
+        if not packager_dlg or not btn1109:
+            raise _Mas2StartupError("Could not find 'Create Single Cmp Package' button (1109)")
+        print(f"Found 'Create Single Cmp Package' button (HWND {btn1109}), clicking...", flush=True)
+
+        # 3. Open "Create Component Package" dialog via WM_COMMAND (BN_CLICKED = 0)
+        cmp_dlg = None
+        pkg_btn = None
+        status_static = None
+        step_deadline = time.monotonic() + 15.0
+        next_post = 0.0
+        while time.monotonic() < step_deadline:
+            if proc.poll() is not None:
+                raise _Mas2StartupError(
+                    f"MAS2.exe exited while opening Create Component Package dialog (exit code {proc.returncode})"
+                )
+            now = time.monotonic()
+            if now >= next_post:
+                user32.PostMessageW(packager_dlg, WM_COMMAND, ID_SINGLE_CMP_BTN, btn1109)
+                next_post = now + 2.0
+
+            for hwnd, cls, title, vis in _enum_pid_windows(proc.pid):
+                if cls == "#32770" and vis and "Mod Packager" not in title and ("Component" in title or "Package" in title):
+                    ch_pkg = _find_child_by_id(hwnd, ID_PACKAGE_BTN)
+                    if ch_pkg:
+                        cmp_dlg = hwnd
+                        pkg_btn = ch_pkg
+                        status_static = _find_child_by_id(hwnd, ID_STATUS_STATIC)
+                        break
+            if cmp_dlg and pkg_btn:
+                break
+            time.sleep(0.1)
+
+        if not cmp_dlg or not pkg_btn:
+            raise _Mas2StartupError("Could not find 'Create Component Package' dialog or Package button (1056)")
+
+        print(f"Found 'Create Component Package' (HWND {cmp_dlg}), Package button (HWND {pkg_btn})", flush=True)
+        time.sleep(0.3)
+
+        # 4. Trigger "Package" once via WM_COMMAND
+        print("Clicking 'Package' button...", flush=True)
+        user32.PostMessageW(cmp_dlg, WM_COMMAND, ID_PACKAGE_BTN, pkg_btn)
+
+        # 5. Monitor packaging status, output growth, completion, and error popups
+        print("Packaging in progress...", flush=True)
+        stall_timeout = (
+            timeout
+            if timeout is not None
+            else max(180, int(120 + (total_mas_bytes / (1024.0 * 1024.0)) * 0.5))
+        )
+        last_progress = time.monotonic()
+        last_size = -1
+        last_status = ""
+        success = False
+        known_dialogs = {packager_dlg, cmp_dlg}
+
+        while time.monotonic() - last_progress < stall_timeout:
+            time.sleep(0.5)
+
+            # Track target RFCMP growth so large writes never hit a premature timeout
+            if os.path.isfile(target_rfcmp_path):
+                try:
+                    cur_size = os.path.getsize(target_rfcmp_path)
+                except OSError:
+                    cur_size = last_size
+                if cur_size > last_size:
+                    last_size = cur_size
+                    last_progress = time.monotonic()
+
+            # Check if MAS2 exited early
+            if proc.poll() is not None:
+                if os.path.isfile(target_rfcmp_path) and os.path.getsize(target_rfcmp_path) >= max(1, total_mas_bytes):
+                    success = True
+                    break
+                raise RuntimeError(
+                    f"MAS2 terminated unexpectedly with exit code {proc.returncode} "
+                    f"(last status: {last_status or 'none'})"
+                )
+
+            # Check status label (ctrl 1120)
+            if status_static:
+                sbuf = ctypes.create_unicode_buffer(512)
+                user32.GetWindowTextW(status_static, sbuf, 512)
+                stext = sbuf.value.strip()
+                if stext and stext != last_status:
+                    last_status = stext
+                    last_progress = time.monotonic()
+                low = stext.lower()
+                if "complete" in low and ("no errors" in low or not _is_error_text(stext)):
+                    print(f"Packaging completed successfully (status: {stext})!", flush=True)
+                    time.sleep(0.5)
+                    success = True
+                    break
+                if _is_error_text(stext):
+                    raise RuntimeError(f"MAS2 packaging error: {stext}")
+
+            # Check any secondary popup dialogs (completion or error MessageBox)
+            for hwnd, cls, _title, vis in _enum_pid_windows(proc.pid):
+                if cls == "#32770" and vis and hwnd not in known_dialogs:
+                    dlg_text = _collect_dialog_text(hwnd)
+                    if "complete with no errors" in dlg_text.lower():
+                        print("Packaging completed successfully (completion dialog confirmed)!", flush=True)
+                        time.sleep(0.5)
+                        success = True
+                        break
+                    if _is_error_text(dlg_text):
+                        raise RuntimeError(f"MAS2 reported an error: {dlg_text}")
+            if success:
+                break
+
+        if not success:
+            raise RuntimeError(
+                f"MAS2 packaging timed out after {stall_timeout}s without progress "
+                f"(last status: {last_status or 'none'}, output bytes: {max(0, last_size):,})"
+            )
+
+        if not os.path.isfile(target_rfcmp_path):
+            raise RuntimeError(f"MAS2 reported completion but output file is missing: {target_rfcmp_path}")
+        final_size = os.path.getsize(target_rfcmp_path)
+        if final_size < total_mas_bytes:
+            raise RuntimeError(
+                f"Output RFCMP appears truncated ({final_size:,} bytes < {total_mas_bytes:,} bytes of input MAS files)"
+            )
+
+    finally:
+        if proc.poll() is None:
+            if mas2_hwnd:
+                try:
+                    user32.PostMessageW(mas2_hwnd, WM_CLOSE, 0, 0)
+                    proc.wait(timeout=1.5)
+                except Exception:
+                    pass
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
+
+
+def build_rfcmp_via_mas2(mas2_exe, cmpinfo_content, target_rfcmp_path, timeout=None, retries=1):
+    """Launch MAS2.exe and automate component creation using Win32 WM_COMMAND messages."""
+    mas_files = _parse_cmpinfo_mas_files(cmpinfo_content)
+    total_mas_bytes = validate_mas_files_for_rfcmp(mas_files, require_exists=True)
+
     appdata = os.environ.get("APPDATA")
     cmpinfo_dat = os.path.join(appdata, "cmpinfo.dat")
     cmpinfo_bak = os.path.join(appdata, "cmpinfo.dat.bak")
@@ -164,227 +548,37 @@ def build_rfcmp_via_mas2(mas2_exe, cmpinfo_content, target_rfcmp_path, timeout=1
     if os.path.isfile(target_rfcmp_path):
         try:
             os.remove(target_rfcmp_path)
-        except Exception:
+        except OSError:
             pass
 
-    if os.path.exists(cmpinfo_dat):
+    if os.path.exists(cmpinfo_dat) and not os.path.exists(cmpinfo_bak):
         shutil.copyfile(cmpinfo_dat, cmpinfo_bak)
 
     # Must be written with exact CRLF without extra carriage returns
     with open(cmpinfo_dat, "wb") as f:
-        f.write(cmpinfo_content.encode("ascii"))
-
-    mas2_cwd = os.path.dirname(mas2_exe)
-    proc = subprocess.Popen([mas2_exe], cwd=mas2_cwd)
-    time.sleep(1.5)
+        f.write(cmpinfo_content.encode("mbcs", errors="replace"))
 
     try:
-        # 1. Find MAS2 main window (class starts with "Afx:")
-        mas2_hwnd = None
-        for _ in range(20):
-            def find_mas2_wnd(hwnd, _):
-                nonlocal mas2_hwnd
-                pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                if pid.value == proc.pid:
-                    cbuf = ctypes.create_unicode_buffer(256)
-                    user32.GetClassNameW(hwnd, cbuf, 256)
-                    if cbuf.value.startswith("Afx:"):
-                        mas2_hwnd = hwnd
-                        return False
-                return True
-            user32.EnumWindows(WNDENUMPROC(find_mas2_wnd), 0)
-            if mas2_hwnd:
-                break
-            time.sleep(0.1)
-
-        if not mas2_hwnd:
-            raise RuntimeError("Could not find MAS2 main window")
-        print(f"MAS2 main HWND: {mas2_hwnd}", flush=True)
-
-        # 2. Find Toolbar and click button 6 ("Create package") to open Mod Packager
-        tb_hwnd = None
-        def find_tb(hwnd, _):
-            nonlocal tb_hwnd
-            cbuf = ctypes.create_unicode_buffer(256)
-            user32.GetClassNameW(hwnd, cbuf, 256)
-            if cbuf.value == "ToolbarWindow32":
-                tb_hwnd = hwnd
-                return False
-            return True
-        user32.EnumChildWindows(mas2_hwnd, WNDENUMPROC(find_tb), 0)
-        if not tb_hwnd:
-            raise RuntimeError("Could not find ToolbarWindow32")
-
-        btn1109 = None
-        for attempt in range(10):
-            lparam = (11 << 16) | 132
-            user32.SendMessageW(tb_hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
-            def send_up(thwnd=tb_hwnd, lp=lparam):
-                user32.SendMessageW(thwnd, WM_LBUTTONUP, 0, lp)
-            threading.Thread(target=send_up, daemon=True).start()
-            print("Clicked Toolbar 'Create package' button", flush=True)
-
-            for _ in range(10):
-                time.sleep(0.1)
-                def find_packager(hwnd, _):
-                    nonlocal btn1109
-                    pid = wintypes.DWORD()
-                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                    if pid.value == proc.pid:
-                        tbuf = ctypes.create_unicode_buffer(256)
-                        user32.GetWindowTextW(hwnd, tbuf, 256)
-                        if "Mod Packager" in tbuf.value:
-                            def find_child(ch, _):
-                                nonlocal btn1109
-                                if user32.GetDlgCtrlID(ch) == 1109:
-                                    btn1109 = ch
-                                    return False
-                                return True
-                            user32.EnumChildWindows(hwnd, WNDENUMPROC(find_child), 0)
-                            return False
-                    return True
-                user32.EnumWindows(WNDENUMPROC(find_packager), 0)
-                if btn1109:
-                    break
-            if btn1109:
-                break
-
-        if not btn1109:
-            raise RuntimeError("Could not find 'Create Single Cmp Package' button (1109)")
-        print(f"Found 'Create Single Cmp Package' button (HWND {btn1109}), clicking...", flush=True)
-        user32.PostMessageW(btn1109, BM_CLICK, 0, 0)
-
-        # 5. Wait for 'Create Component Package' dialog and button 1056 ("Package")
-        cmp_dlg = None
-        pkg_btn = None
-        status_static = None
-
-        for _ in range(50):
-            time.sleep(0.1)
-            def find_cmp_dlg(hwnd, _):
-                nonlocal cmp_dlg, pkg_btn, status_static
-                pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                if pid.value == proc.pid:
-                    tbuf = ctypes.create_unicode_buffer(256)
-                    user32.GetWindowTextW(hwnd, tbuf, 256)
-                    if "Component" in tbuf.value or "Package" in tbuf.value:
-                        cbuf = ctypes.create_unicode_buffer(256)
-                        user32.GetClassNameW(hwnd, cbuf, 256)
-                        if cbuf.value == "#32770" and "Mod Packager" not in tbuf.value:
-                            cmp_dlg = hwnd
-                            def enum_cmp_children(ch, _):
-                                nonlocal pkg_btn, status_static
-                                cid = user32.GetDlgCtrlID(ch)
-                                if cid == 1056:
-                                    pkg_btn = ch
-                                elif cid == 1120:
-                                    status_static = ch
-                                return True
-                            user32.EnumChildWindows(hwnd, WNDENUMPROC(enum_cmp_children), 0)
-                            return False
-                return True
-            user32.EnumWindows(WNDENUMPROC(find_cmp_dlg), 0)
-            if cmp_dlg and pkg_btn:
-                break
-
-        if not cmp_dlg or not pkg_btn:
-            raise RuntimeError("Could not find 'Create Component Package' dialog or Package button (1056)")
-
-        print(f"Found 'Create Component Package' (HWND {cmp_dlg}), Package button (HWND {pkg_btn})", flush=True)
-        time.sleep(0.5)
-
-        # Click "Package"
-        print("Clicking 'Package' button...", flush=True)
-        user32.PostMessageW(pkg_btn, BM_CLICK, 0, 0)
-
-        # 6. Monitor packaging status
-        print("Packaging in progress...", flush=True)
-        start_time = time.time()
-        success = False
-        last_size = -1
-        stable_count = 0
-
-        while time.time() - start_time < timeout:
-            time.sleep(0.5)
-
-            # Check if process terminated unexpectedly
-            if proc.poll() is not None:
-                if os.path.isfile(target_rfcmp_path) and os.path.getsize(target_rfcmp_path) > 1024 * 1024:
-                    success = True
-                    break
-                raise RuntimeError(f"MAS2 terminated unexpectedly with exit code {proc.returncode}")
-
-            # 1. Check status text in dialog (HWND status_static, ctrl ID 1120)
-            if status_static:
-                sbuf = ctypes.create_unicode_buffer(256)
-                user32.GetWindowTextW(status_static, sbuf, 256)
-                stext = sbuf.value.strip()
-                if "complete" in stext.lower() or "no errors" in stext.lower():
-                    print(f"Packaging completed successfully (status: {stext})!", flush=True)
-                    time.sleep(1.0)
-                    success = True
-                    break
-
-            # 2. Check for completion popup dialog
-            def check_win(hwnd, _):
-                nonlocal success
-                cur_pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(cur_pid))
-                if cur_pid.value == proc.pid:
-                    tbuf = ctypes.create_unicode_buffer(256)
-                    user32.GetWindowTextW(hwnd, tbuf, 256)
-                    if "complete with no errors" in tbuf.value.lower():
-                        success = True
-                        return False
-                    def check_child(ch, _):
-                        nonlocal success
-                        ct = ctypes.create_unicode_buffer(256)
-                        user32.GetWindowTextW(ch, ct, 256)
-                        if "complete with no errors" in ct.value.lower():
-                            success = True
-                            return False
-                        return True
-                    user32.EnumChildWindows(hwnd, WNDENUMPROC(check_child), 0)
-                    if success:
-                        return False
-                return True
-            user32.EnumWindows(WNDENUMPROC(check_win), 0)
-
-            if success:
-                print("Packaging completed successfully (completion dialog confirmed)!", flush=True)
-                time.sleep(1.0)
-                break
-
-            # 3. Fallback: check target RFCMP size stability (>1MB and stable)
-            if os.path.isfile(target_rfcmp_path):
-                cur_size = os.path.getsize(target_rfcmp_path)
-                if cur_size > 1024 * 1024:
-                    if cur_size == last_size:
-                        stable_count += 1
-                        if stable_count >= 6:  # stable for 3 seconds
-                            print(f"Target RFCMP size stable: {cur_size:,} bytes", flush=True)
-                            success = True
-                            break
-                    else:
-                        last_size = cur_size
-                        stable_count = 0
-
-        if not success:
-            raise RuntimeError("Packaging timed out or failed")
-
+        attempts = max(1, int(retries) + 1)
+        for attempt in range(1, attempts + 1):
+            try:
+                _run_mas2_once(mas2_exe, target_rfcmp_path, total_mas_bytes, timeout=timeout)
+                return
+            except _Mas2StartupError as exc:
+                if attempt < attempts:
+                    print(f"MAS2 startup attempt {attempt}/{attempts} failed ({exc}); retrying...", flush=True)
+                    time.sleep(2.0)
+                    continue
+                raise
     finally:
-        try:
-            proc.kill()
-            proc.wait(timeout=3)
-        except Exception:
-            pass
         if os.path.exists(cmpinfo_bak):
             shutil.copyfile(cmpinfo_bak, cmpinfo_dat)
             os.remove(cmpinfo_bak)
         elif os.path.exists(cmpinfo_dat):
-            os.remove(cmpinfo_dat)
+            try:
+                os.remove(cmpinfo_dat)
+            except OSError:
+                pass
 
 
 def package_track(stage_dir, output_rfcmp=None, name=None, version=None, install=False):
@@ -424,7 +618,7 @@ def package_track(stage_dir, output_rfcmp=None, name=None, version=None, install
 
     # Assets MAS
     assets_mas = os.path.join(stage_dir, f"{venue}_assets.mas")
-    if not os.path.isfile(assets_mas) or os.path.getsize(assets_mas) == 0:
+    if not is_valid_mas_file(assets_mas):
         print(f"Building {os.path.basename(assets_mas)} ({len(assets_files)} files)...")
         build_mas_archive(modmgr, assets_mas, assets_files)
     else:
@@ -434,7 +628,7 @@ def package_track(stage_dir, output_rfcmp=None, name=None, version=None, install
     # Materials MAS (if non-empty)
     if materials_files:
         mat_mas = os.path.join(stage_dir, f"{venue}_materials.mas")
-        if not os.path.isfile(mat_mas) or os.path.getsize(mat_mas) == 0:
+        if not is_valid_mas_file(mat_mas):
             print(f"Building {os.path.basename(mat_mas)} ({len(materials_files)} files)...")
             build_mas_archive(modmgr, mat_mas, materials_files)
         else:
@@ -443,12 +637,15 @@ def package_track(stage_dir, output_rfcmp=None, name=None, version=None, install
 
     # Layout MAS
     layout_mas = os.path.join(stage_dir, f"{venue}_layout.mas")
-    if not os.path.isfile(layout_mas) or os.path.getsize(layout_mas) == 0:
+    if not is_valid_mas_file(layout_mas):
         print(f"Building {os.path.basename(layout_mas)} ({len(layout_files)} files)...")
         build_mas_archive(modmgr, layout_mas, layout_files)
     else:
         print(f"Reusing {os.path.basename(layout_mas)} ({os.path.getsize(layout_mas):,} bytes)")
     mas_files.append(layout_mas)
+
+    # Enforce 4 GiB MAS / RFCMP limit before launching MAS2.exe
+    validate_mas_files_for_rfcmp(mas_files, stage_dir=stage_dir, require_exists=False)
 
     # 2. Prepare RFCMP target path
     safe_name = track_name.replace(" ", "_")
@@ -515,7 +712,12 @@ def package_track(stage_dir, output_rfcmp=None, name=None, version=None, install
     if install:
         print("Installing package into rFactor 2...")
         cmd = [modmgr, f"-d{rf2_dir}", f"-i{output_rfcmp}"]
-        subprocess.run(cmd, cwd=rf2_dir, capture_output=True, text=True)
+        proc = subprocess.run(cmd, cwd=rf2_dir, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"ModMgr failed to install {output_rfcmp} (exit code {proc.returncode}): "
+                f"{(proc.stderr or proc.stdout).strip()}"
+            )
         print("Package installed successfully!")
 
 

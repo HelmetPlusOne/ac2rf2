@@ -761,6 +761,84 @@ class Kn5Tests(unittest.TestCase):
             self.assertIn("built-in default surfaces.ini", out)
             self.assertNotIn("Assetto Corsa not found", out)
 
+    def test_package_rfcmp_rejects_over_4gb_mas_without_running_mas2(self):
+        import package_rfcmp
+
+        with tempfile.TemporaryDirectory() as root:
+            mas_a = os.path.join(root, "a.mas")
+            mas_b = os.path.join(root, "b.mas")
+            for p in (mas_a, mas_b):
+                with open(p, "wb") as f:
+                    f.write(package_rfcmp.MAS_MAGIC + b"\x00" * 16)
+
+            # 1. Single MAS >= 4 GiB rejected
+            with mock.patch("os.path.getsize", return_value=package_rfcmp.MAX_MAS_BYTES):
+                with self.assertRaises(RuntimeError) as ctx:
+                    package_rfcmp.validate_mas_files_for_rfcmp([mas_a])
+                self.assertIn("4.00 GB", str(ctx.exception))
+
+            # 2. Combined MAS >= 4 GiB - 4 MiB rejected (two 2.1 GiB files)
+            two_point_one_gb = int(2.1 * 1024 * 1024 * 1024)
+            with mock.patch("os.path.getsize", return_value=two_point_one_gb):
+                with self.assertRaises(RuntimeError) as ctx:
+                    package_rfcmp.validate_mas_files_for_rfcmp([mas_a, mas_b])
+                self.assertIn("Combined MAS archives", str(ctx.exception))
+
+            # 3. package_track must never invoke build_rfcmp_via_mas2 when over 4 GiB
+            stage = os.path.join(root, "big_track")
+            os.makedirs(os.path.join(stage, "Assets"))
+            with open(os.path.join(stage, "big_track.gdb"), "w") as f:
+                f.write("TrackName = BigTrack\n")
+            big_mas = os.path.join(stage, "big_track_assets.mas")
+            lay_mas = os.path.join(stage, "big_track_layout.mas")
+            for p in (big_mas, lay_mas):
+                with open(p, "wb") as f:
+                    f.write(package_rfcmp.MAS_MAGIC + b"\x00" * 16)
+
+            real_getsize = os.path.getsize
+            def fake_getsize(path):
+                if os.path.abspath(path) == os.path.abspath(big_mas):
+                    return package_rfcmp.MAX_MAS_BYTES + 1024
+                return real_getsize(path)
+
+            mas2_mock = mock.MagicMock()
+            with mock.patch.object(package_rfcmp, "find_modmgr", return_value="ModMgr.exe"), \
+                    mock.patch.object(package_rfcmp, "find_mas2", return_value="MAS2.exe"), \
+                    mock.patch.object(package_rfcmp, "build_rfcmp_via_mas2", mas2_mock), \
+                    mock.patch("os.path.getsize", side_effect=fake_getsize):
+                with self.assertRaises(RuntimeError):
+                    package_rfcmp.package_track(stage, output_rfcmp=root)
+                mas2_mock.assert_not_called()
+
+    def test_build_mas_archive_validates_returncode_and_magic(self):
+        import package_rfcmp
+
+        with tempfile.TemporaryDirectory() as root:
+            src = os.path.join(root, "sample.tdf")
+            with open(src, "wb") as f:
+                f.write(b"TDF_DATA")
+            out_mas = os.path.join(root, "out.mas")
+
+            # Non-zero exit code with bogus file -> raises and cleans up partial file
+            def fake_fail(cmd, cwd, stdout, stderr):
+                with open(out_mas, "wb") as f:
+                    f.write(b"NOT_A_MAS_FILE_AT_ALL")
+                m = mock.MagicMock()
+                m.returncode = 1
+                m.stdout = b""
+                m.stderr = b"ModMgr error"
+                return m
+
+            with mock.patch("subprocess.run", side_effect=fake_fail):
+                with self.assertRaises(RuntimeError):
+                    package_rfcmp.build_mas_archive("ModMgr.exe", out_mas, [src])
+            self.assertFalse(os.path.exists(out_mas))
+
+            # Error text helper distinguishes completion from actual errors
+            self.assertFalse(package_rfcmp._is_error_text("Component packaging complete with no errors"))
+            self.assertTrue(package_rfcmp._is_error_text("Error creating component package"))
+            self.assertTrue(package_rfcmp._is_error_text("File is too large"))
+
 
 if __name__ == "__main__":
     unittest.main()

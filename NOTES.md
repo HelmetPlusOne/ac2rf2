@@ -1277,3 +1277,41 @@ combinations, 842 kn5 files), not only on the seven built so far.
      allocation.
   3. `verify_install.py`: Accepted `Render=False` alongside `LODOut=(0.01)` when
      verifying hidden instances.
+
+## 2026-11-24: Hardening MAS / RFCMP packaging (santa_monica_mtns investigation)
+- Investigated `out\error1\cli.txt` (`Error: Could not find MAS2 main window`) on
+  `santa_monica_mtns_a_stuntRace` (`texture_scale=0.5`, 2,491 GMTs = 1,551.9 MB,
+  833 MAPs = 1,741.9 MB, 3,293.8 MB uncompressed total):
+  1. Both staged `.mas` archives were valid `GMOTOR20MAS` files
+     (`santa_monica_mtns_a_stuntrace_assets.mas` = 1,708,425,687 bytes / 1.59 GiB,
+     `santa_monica_mtns_a_stuntrace_layout.mas` = 281,444 bytes). Re-running
+     `package_rfcmp.package_track` produced a valid `1,708,708,508`-byte `.rfcmp`
+     in 48.44s (`Component packaging complete with no errors`).
+  2. Windows Application Event Log showed no `MAS2.exe` crash at the time of the
+     failure (12:38:44): `build_rfcmp_via_mas2` only waited 3.5s (`1.5 + 20 * 0.1s`)
+     for `MAS2.exe` to create its `Afx:` window, immediately after `build_mas_archive`
+     copied 3,325 files (3.29 GB) to `%TEMP%`, wrote 1.63 GB, and deleted 3.29 GB.
+     Even on an idle SSD, cold-ish launch took 0.465s (`vis=False`) to 0.517s (`vis=True`).
+  3. Windows Application Event Log also showed earlier `MAS2.exe` crashes in
+     `COMCTL32.dll` (`0xc0000005` / `0xc000041d` at offset `0x3a387`) caused by
+     faking `WM_LBUTTONDOWN` + threaded `WM_LBUTTONUP` at hardcoded `(132, 11)` on
+     `ToolbarWindow32`. Inspecting `MAS2.exe` via `TB_GETBUTTON` measured button 6
+     ("Create package") as MFC command ID `32824`; sending `PostMessageW(hwnd,
+     WM_COMMAND, 32824, 0)` -> `WM_COMMAND 1109` -> `WM_COMMAND 1056` opens every
+     dialog and builds the `.rfcmp` without touching `ToolbarWindow32` or pixel
+     coordinates.
+  4. Header measurements confirmed `.mas` (`GMOTOR20MAS`, `f1 05 44 20 7d 3f 45 2d 37 08 5a 29 3f 08 55`)
+     and `.rfcmp` (`GMOTOR20PKG`, `f1 05 44 20 7d 3f 58 27 23 08 5a 29 3f 08 55`)
+     both use 32-bit containers (4 GiB max), and `.rfcmp` wraps `.mas` files
+     uncompressed (+1,377 bytes overhead on `santa_monica_mtns`).
+- Hardened `package_rfcmp.py`:
+  1. `build_mas_archive` now stages via NTFS hardlinks (`os.link`, falling back to
+     `shutil.copy2`) next to the output `.mas`, checks `ModMgr.exe` exit code and
+     `MAS_MAGIC`, and rejects archives >= 4 GiB.
+  2. `validate_mas_files_for_rfcmp` enforces the 4 GiB limit on both individual
+     `.mas` files and their combined `.rfcmp` payload before launching `MAS2.exe`.
+  3. `build_rfcmp_via_mas2` waits up to 30s for a visible `Afx:` window with
+     early-exit detection and 1 automatic startup retry, uses pure `WM_COMMAND`
+     (`32824` -> `1109` -> `1056`), monitors both status text and `#32770` error
+     dialogs, scales stall timeout dynamically with total MAS size (resetting on
+     output growth), and verifies final `.rfcmp` size >= sum of input `.mas` sizes.
