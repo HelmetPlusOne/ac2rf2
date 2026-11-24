@@ -777,14 +777,13 @@ class Kn5Tests(unittest.TestCase):
                     package_rfcmp.validate_mas_files_for_rfcmp([mas_a])
                 self.assertIn("4.00 GB", str(ctx.exception))
 
-            # 2. Combined MAS >= 4 GiB - 4 MiB rejected (two 2.1 GiB files)
+            # 2. Multiple MAS files each < 4 GiB are allowed (even when combined > 4 GiB)
             two_point_one_gb = int(2.1 * 1024 * 1024 * 1024)
             with mock.patch("os.path.getsize", return_value=two_point_one_gb):
-                with self.assertRaises(RuntimeError) as ctx:
-                    package_rfcmp.validate_mas_files_for_rfcmp([mas_a, mas_b])
-                self.assertIn("Combined MAS archives", str(ctx.exception))
+                total = package_rfcmp.validate_mas_files_for_rfcmp([mas_a, mas_b])
+                self.assertEqual(total, 2 * two_point_one_gb)
 
-            # 3. package_track must never invoke build_rfcmp_via_mas2 when over 4 GiB
+            # 3. package_track must never invoke build_rfcmp_via_mas2 when an unsplittable MAS is >= 4 GiB
             stage = os.path.join(root, "big_track")
             os.makedirs(os.path.join(stage, "Assets"))
             with open(os.path.join(stage, "big_track.gdb"), "w") as f:
@@ -875,6 +874,96 @@ class Kn5Tests(unittest.TestCase):
             dec_mip = bake_layers.to_rgba(os.path.join(tex_dir, out_name), tmp_dir, 16, 16)
             self.assertIsNotNone(dec_mip)
             self.assertEqual(float(dec_mip[:, :, 3].max()), 0.0)
+
+    def test_multi_mas_pack_first_and_split_only_when_exceeding_limit(self):
+        import package_rfcmp
+
+        with tempfile.TemporaryDirectory() as root:
+            stage = os.path.join(root, "big_track")
+            gmt_dir = os.path.join(stage, "Assets", "GMTs")
+            lay_dir = os.path.join(stage, "big_track")
+            os.makedirs(gmt_dir)
+            os.makedirs(lay_dir)
+            with open(os.path.join(lay_dir, "big_track.gdb"), "w") as f:
+                f.write("TrackName = BigTrack\n")
+
+            # Create 6 tiny asset files of varying sizes (total 1200 bytes)
+            asset_files = []
+            for idx, sz in enumerate((300, 260, 220, 180, 140, 100)):
+                p = os.path.join(gmt_dir, f"mesh_{idx}.gmt")
+                with open(p, "wb") as f:
+                    f.write(b"x" * sz)
+                asset_files.append(p)
+
+            calls = []
+
+            def fake_build_mas(modmgr, out_mas, file_list, max_mas_bytes=package_rfcmp.MAX_MAS_BYTES):
+                calls.append((os.path.basename(out_mas), [os.path.basename(p) for p in file_list]))
+                # Simulated compressed size = 50% of uncompressed input size + 16-byte MAS magic
+                total_in = sum(os.path.getsize(p) for p in file_list if os.path.isfile(p))
+                payload_len = max(16, total_in // 2)
+                with open(out_mas, "wb") as f:
+                    f.write(package_rfcmp.MAS_MAGIC + b"\x00" * payload_len)
+                return True
+
+            # 1. Under limit (limit=1000, packed size ~616): single MAS only, no re-pack
+            with mock.patch.object(package_rfcmp, "build_mas_archive", side_effect=fake_build_mas):
+                res = package_rfcmp.build_or_reuse_mas_group(
+                    "ModMgr.exe", stage, "big_track_assets", asset_files, max_mas_bytes=1000
+                )
+            self.assertEqual([os.path.basename(p) for p in res], ["big_track_assets.mas"])
+            self.assertEqual([c[0] for c in calls], ["big_track_assets.mas"])
+            os.remove(res[0])
+            calls.clear()
+
+            # 2. Over limit (limit=350, single packed ~616 >= 350): packs single first, then splits into parts < 350
+            with mock.patch.object(package_rfcmp, "build_mas_archive", side_effect=fake_build_mas):
+                res = package_rfcmp.build_or_reuse_mas_group(
+                    "ModMgr.exe", stage, "big_track_assets", asset_files, max_mas_bytes=350
+                )
+            self.assertEqual(calls[0][0], "big_track_assets.mas")  # tried single MAS first
+            self.assertFalse(os.path.exists(os.path.join(stage, "big_track_assets.mas")))
+            self.assertGreaterEqual(len(res), 2)
+            for idx, part in enumerate(res, 1):
+                self.assertEqual(os.path.basename(part), f"big_track_assets_part{idx}.mas")
+                self.assertLess(os.path.getsize(part), 350)
+            # Every asset file must be packed across the parts (no file dropped or duplicated)
+            packed_names = []
+            for name, flist in calls[1:]:
+                if name in [os.path.basename(p) for p in res]:
+                    packed_names.extend(flist)
+            self.assertEqual(sorted(packed_names), sorted(os.path.basename(p) for p in asset_files))
+
+            # 3. Re-running reuses existing valid split parts without rebuilding
+            calls.clear()
+            with mock.patch.object(package_rfcmp, "build_mas_archive", side_effect=fake_build_mas):
+                res_reused = package_rfcmp.build_or_reuse_mas_group(
+                    "ModMgr.exe", stage, "big_track_assets", asset_files, max_mas_bytes=350
+                )
+            self.assertEqual(res_reused, res)
+            self.assertEqual(calls, [])
+
+            # 4. ModMgr failure on oversized single archive triggers split-and-repack recovery
+            for p in res:
+                os.remove(p)
+            calls.clear()
+            failed_once = {"done": False}
+
+            def fail_first_then_succeed(modmgr, out_mas, file_list, max_mas_bytes=package_rfcmp.MAX_MAS_BYTES):
+                if not failed_once["done"] and os.path.basename(out_mas) == "big_track_assets.mas":
+                    failed_once["done"] = True
+                    calls.append((os.path.basename(out_mas), "FAIL"))
+                    raise RuntimeError("ModMgr 4GB overflow")
+                return fake_build_mas(modmgr, out_mas, file_list, max_mas_bytes=max_mas_bytes)
+
+            with mock.patch.object(package_rfcmp, "build_mas_archive", side_effect=fail_first_then_succeed):
+                res_rec = package_rfcmp.build_or_reuse_mas_group(
+                    "ModMgr.exe", stage, "big_track_assets", asset_files, max_mas_bytes=350
+                )
+            self.assertEqual(calls[0], ("big_track_assets.mas", "FAIL"))
+            self.assertGreaterEqual(len(res_rec), 2)
+            for p in res_rec:
+                self.assertLess(os.path.getsize(p), 350)
 
 
 if __name__ == "__main__":

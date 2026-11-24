@@ -17,6 +17,7 @@ import argparse
 import ctypes
 from ctypes import wintypes
 import glob
+import math
 import os
 import re
 import shutil
@@ -50,9 +51,9 @@ ID_STATUS_STATIC = 1120     # Create Component Package: status label
 MAS_MAGIC = b"f1\x05D }?E-7\x08Z)?\x08U"
 PKG_MAGIC = b"f1\x05D }?X'#\x08Z)?\x08U"
 
-MAX_MAS_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB
-# .rfcmp wraps all .mas files uncompressed plus ~1.4 KB header/manifest; keep 4 MiB headroom.
-MAX_RFCMP_PAYLOAD_BYTES = MAX_MAS_BYTES - (4 * 1024 * 1024)
+MAX_MAS_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB per individual MAS archive
+# Target fill ratio when splitting an oversized MAS archive so each part stays safely under MAX_MAS_BYTES.
+SPLIT_MAS_TARGET_RATIO = 0.85
 
 
 class _Mas2StartupError(RuntimeError):
@@ -76,11 +77,11 @@ def is_valid_mas_file(path):
         return False
 
 
-def validate_mas_files_for_rfcmp(mas_files, stage_dir=None, require_exists=False):
-    """Ensure individual and combined MAS file sizes fit within rF2's 4 GiB limit.
+def validate_mas_files_for_rfcmp(mas_files, stage_dir=None, require_exists=False, max_mas_bytes=MAX_MAS_BYTES):
+    """Ensure every individual MAS file fits within rF2's 4 GiB per-MAS limit.
 
     Returns total size in bytes of existing MAS files. Raises RuntimeError before
-    MAS2.exe is launched if any MAS file or their combined payload reaches 4 GiB.
+    MAS2.exe is launched if any single MAS file reaches max_mas_bytes.
     """
     entries = []
     total_bytes = 0
@@ -95,24 +96,58 @@ def validate_mas_files_for_rfcmp(mas_files, stage_dir=None, require_exists=False
         entries.append((mf, sz))
         total_bytes += sz
 
-    oversized = [(mf, sz) for mf, sz in entries if sz >= MAX_MAS_BYTES]
-    if oversized or total_bytes >= MAX_RFCMP_PAYLOAD_BYTES:
+    oversized = [(mf, sz) for mf, sz in entries if sz >= max_mas_bytes]
+    if oversized:
         detail_lines = [f"  - {os.path.basename(mf)}: {_fmt_gb(sz)} ({sz:,} bytes)" for mf, sz in entries]
-        reason = (
-            f"MAS archive '{os.path.basename(oversized[0][0])}' is {_fmt_gb(oversized[0][1])}"
-            if oversized
-            else f"Combined MAS archives total {_fmt_gb(total_bytes)}"
-        )
+        reason = f"MAS archive '{os.path.basename(oversized[0][0])}' is {_fmt_gb(oversized[0][1])}"
         hint_stage = f"\nStaged track files remain available at: {stage_dir}" if stage_dir else ""
         raise RuntimeError(
-            f"{reason}, exceeding rFactor 2's 4.00 GB MAS/RFCMP limit. "
-            f"Skipping RFCMP packaging because MAS2.exe cannot package archives >= 4 GB.\n"
+            f"{reason}, exceeding rFactor 2's {_fmt_gb(max_mas_bytes)} per-MAS limit. "
+            f"Skipping RFCMP packaging because MAS2.exe cannot package MAS files >= {_fmt_gb(max_mas_bytes)}.\n"
             + "\n".join(detail_lines)
             + "\nTo reduce track size, lower texture_scale (e.g. 0.5 or 0.25) and/or enable "
             "mesh_coarsening in ac2rf2.ini (or via --texture-scale / --mesh-coarsening)."
             + hint_stage
         )
     return total_bytes
+
+
+def partition_files_by_size(file_list, n_parts):
+    """Partition file_list into up to n_parts balanced buckets by uncompressed file size."""
+    n_parts = max(1, min(int(n_parts), len(file_list)))
+    sized = sorted(
+        ((os.path.getsize(p) if os.path.isfile(p) else 0, os.path.basename(p).lower(), p) for p in file_list),
+        key=lambda item: (-item[0], item[1], item[2]),
+    )
+    buckets = [[] for _ in range(n_parts)]
+    totals = [0] * n_parts
+    for sz, _name, path in sized:
+        idx = min(range(n_parts), key=lambda i: (totals[i], len(buckets[i]), i))
+        buckets[idx].append(path)
+        totals[idx] += sz
+    return [b for b in buckets if b]
+
+
+def _find_existing_part_mas(stage_dir, base_stem):
+    """Return existing <base_stem>_part<N>.mas paths in stage_dir sorted by part number."""
+    if not os.path.isdir(stage_dir):
+        return []
+    pat = re.compile(r"^" + re.escape(base_stem) + r"_part(\d+)\.mas$", re.IGNORECASE)
+    found = []
+    for name in os.listdir(stage_dir):
+        m = pat.match(name)
+        if m:
+            found.append((int(m.group(1)), os.path.join(stage_dir, name)))
+    found.sort(key=lambda item: item[0])
+    return [p for _, p in found]
+
+
+def _remove_file_quiet(path):
+    if path and os.path.isfile(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def _parse_cmpinfo_mas_files(cmpinfo_content):
@@ -214,7 +249,7 @@ def read_track_metadata(stage_dir, default_name=None, default_ver="1.0"):
     return name, ver
 
 
-def build_mas_archive(modmgr_exe, output_mas_path, file_list):
+def build_mas_archive(modmgr_exe, output_mas_path, file_list, max_mas_bytes=MAX_MAS_BYTES):
     """Compile a .mas file using ModMgr.exe -m with a hardlinked staging directory."""
     existing = [src for src in file_list if os.path.isfile(src)]
     if not existing:
@@ -224,11 +259,7 @@ def build_mas_archive(modmgr_exe, output_mas_path, file_list):
     os.makedirs(out_parent, exist_ok=True)
 
     # Remove any previous archive so a failed ModMgr run can never look like success.
-    if os.path.isfile(output_mas_path):
-        try:
-            os.remove(output_mas_path)
-        except OSError:
-            pass
+    _remove_file_quiet(output_mas_path)
 
     # Stage on the same volume as output_mas_path so os.link avoids multi-GB copies.
     temp_dir = tempfile.mkdtemp(prefix="_rf2_mas_", dir=out_parent)
@@ -245,11 +276,7 @@ def build_mas_archive(modmgr_exe, output_mas_path, file_list):
         cmd = [modmgr_exe, f"-m{output_mas_path}", os.path.join(temp_dir, "*.*")]
         proc = subprocess.run(cmd, cwd=temp_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if proc.returncode != 0 or not is_valid_mas_file(output_mas_path):
-            if os.path.isfile(output_mas_path):
-                try:
-                    os.remove(output_mas_path)
-                except OSError:
-                    pass
+            _remove_file_quiet(output_mas_path)
             stderr = proc.stderr.decode(errors="ignore").strip()
             stdout = proc.stdout.decode(errors="ignore").strip()
             msg = stderr or stdout or "no output"
@@ -259,15 +286,142 @@ def build_mas_archive(modmgr_exe, output_mas_path, file_list):
             )
 
         mas_size = os.path.getsize(output_mas_path)
-        if mas_size >= MAX_MAS_BYTES:
+        if max_mas_bytes is not None and mas_size >= max_mas_bytes:
             raise RuntimeError(
                 f"Generated MAS archive '{os.path.basename(output_mas_path)}' is "
-                f"{_fmt_gb(mas_size)} ({mas_size:,} bytes), exceeding rFactor 2's 4.00 GB limit. "
+                f"{_fmt_gb(mas_size)} ({mas_size:,} bytes), exceeding rFactor 2's {_fmt_gb(max_mas_bytes)} limit. "
                 "Lower texture_scale or enable mesh_coarsening in ac2rf2.ini."
             )
         return True
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def build_split_mas_archives(modmgr_exe, stage_dir, base_stem, file_list, measured_size=None,
+                             max_mas_bytes=MAX_MAS_BYTES):
+    """Split file_list across multiple <base_stem>_partN.mas files so each stays under max_mas_bytes."""
+    existing = [src for src in file_list if os.path.isfile(src)]
+    single_mas = os.path.join(stage_dir, f"{base_stem}.mas")
+    _remove_file_quiet(single_mas)
+    for old_part in _find_existing_part_mas(stage_dir, base_stem):
+        _remove_file_quiet(old_part)
+
+    if len(existing) <= 1:
+        raise RuntimeError(
+            f"MAS archive '{base_stem}.mas' exceeds the {_fmt_gb(max_mas_bytes)} limit and cannot be "
+            f"split further ({len(existing)} file(s)). Lower texture_scale or enable mesh_coarsening in ac2rf2.ini."
+        )
+
+    uncompressed_total = sum(os.path.getsize(p) for p in existing)
+    target_bytes = max(1, int(max_mas_bytes * SPLIT_MAS_TARGET_RATIO))
+    basis = measured_size if measured_size is not None else uncompressed_total
+    n_parts = max(2, min(len(existing), math.ceil(basis / target_bytes)))
+
+    queue = partition_files_by_size(existing, n_parts)
+    built_parts = []
+    part_idx = 1
+
+    while queue:
+        chunk = queue.pop(0)
+        part_path = os.path.join(stage_dir, f"{base_stem}_part{part_idx}.mas")
+        print(f"Building {os.path.basename(part_path)} ({len(chunk)} files)...", flush=True)
+        chunk_uncompressed = sum(os.path.getsize(p) for p in chunk)
+        try:
+            build_mas_archive(modmgr_exe, part_path, chunk, max_mas_bytes=None)
+        except RuntimeError:
+            _remove_file_quiet(part_path)
+            if len(chunk) > 1 and chunk_uncompressed >= max_mas_bytes:
+                print(
+                    f"  {os.path.basename(part_path)} failed on {_fmt_gb(chunk_uncompressed)} of inputs; "
+                    f"splitting further...",
+                    flush=True,
+                )
+                queue = partition_files_by_size(chunk, 2) + queue
+                continue
+            raise
+
+        part_size = os.path.getsize(part_path) if os.path.isfile(part_path) else 0
+        if part_size >= max_mas_bytes:
+            _remove_file_quiet(part_path)
+            if len(chunk) <= 1:
+                raise RuntimeError(
+                    f"Single file '{os.path.basename(chunk[0])}' produced a {_fmt_gb(part_size)} MAS archive "
+                    f"(>= {_fmt_gb(max_mas_bytes)}); cannot split further."
+                )
+            print(
+                f"  {os.path.basename(part_path)} is {_fmt_gb(part_size)} (>= {_fmt_gb(max_mas_bytes)}); "
+                f"splitting chunk ({len(chunk)} files) into 2 smaller parts...",
+                flush=True,
+            )
+            queue = partition_files_by_size(chunk, 2) + queue
+            continue
+
+        built_parts.append(part_path)
+        part_idx += 1
+
+    return built_parts
+
+
+def build_or_reuse_mas_group(modmgr_exe, stage_dir, base_stem, file_list, max_mas_bytes=MAX_MAS_BYTES):
+    """Pack file_list into <base_stem>.mas first; only split & re-pack into part MAS files if >= max_mas_bytes."""
+    single_mas = os.path.join(stage_dir, f"{base_stem}.mas")
+
+    # 1. Reuse existing valid split parts if present (and no single archive exists)
+    existing_parts = _find_existing_part_mas(stage_dir, base_stem)
+    if existing_parts and not is_valid_mas_file(single_mas):
+        if all(is_valid_mas_file(p) and os.path.getsize(p) < max_mas_bytes for p in existing_parts):
+            for p in existing_parts:
+                print(f"Reusing {os.path.basename(p)} ({os.path.getsize(p):,} bytes)")
+            return existing_parts
+
+    # 2. Reuse existing single archive if valid and within limit; split if oversized
+    if is_valid_mas_file(single_mas):
+        sz = os.path.getsize(single_mas)
+        if sz < max_mas_bytes:
+            print(f"Reusing {os.path.basename(single_mas)} ({sz:,} bytes)")
+            return [single_mas]
+        print(
+            f"Existing {os.path.basename(single_mas)} is {_fmt_gb(sz)} (>= {_fmt_gb(max_mas_bytes)}); "
+            f"re-packing into multiple MAS archives...",
+            flush=True,
+        )
+        return build_split_mas_archives(
+            modmgr_exe, stage_dir, base_stem, file_list, measured_size=sz, max_mas_bytes=max_mas_bytes
+        )
+
+    # 3. Pack everything into one MAS first (default path for all tracks fitting under limit)
+    print(f"Building {os.path.basename(single_mas)} ({len(file_list)} files)...")
+    existing_files = [src for src in file_list if os.path.isfile(src)]
+    uncompressed_total = sum(os.path.getsize(p) for p in existing_files)
+    try:
+        build_mas_archive(modmgr_exe, single_mas, file_list, max_mas_bytes=None)
+    except RuntimeError:
+        _remove_file_quiet(single_mas)
+        if len(existing_files) > 1 and uncompressed_total >= max_mas_bytes:
+            print(
+                f"Single MAS '{os.path.basename(single_mas)}' failed on {_fmt_gb(uncompressed_total)} of inputs; "
+                f"re-packing into multiple MAS archives...",
+                flush=True,
+            )
+            return build_split_mas_archives(
+                modmgr_exe, stage_dir, base_stem, existing_files, measured_size=None, max_mas_bytes=max_mas_bytes
+            )
+        raise
+
+    # 4. Check actual packed size and re-pack into multiple MAS archives only if it exceeds the limit
+    if os.path.isfile(single_mas):
+        sz = os.path.getsize(single_mas)
+        if sz >= max_mas_bytes:
+            print(
+                f"MAS archive '{os.path.basename(single_mas)}' is {_fmt_gb(sz)} (>= {_fmt_gb(max_mas_bytes)}); "
+                f"re-packing into multiple MAS archives...",
+                flush=True,
+            )
+            return build_split_mas_archives(
+                modmgr_exe, stage_dir, base_stem, existing_files, measured_size=sz, max_mas_bytes=max_mas_bytes
+            )
+
+    return [single_mas]
 
 
 def _enum_pid_windows(target_pid):
@@ -616,35 +770,17 @@ def package_track(stage_dir, output_rfcmp=None, name=None, version=None, install
 
     mas_files = []
 
-    # Assets MAS
-    assets_mas = os.path.join(stage_dir, f"{venue}_assets.mas")
-    if not is_valid_mas_file(assets_mas):
-        print(f"Building {os.path.basename(assets_mas)} ({len(assets_files)} files)...")
-        build_mas_archive(modmgr, assets_mas, assets_files)
-    else:
-        print(f"Reusing {os.path.basename(assets_mas)} ({os.path.getsize(assets_mas):,} bytes)")
-    mas_files.append(assets_mas)
+    # Assets MAS (packs as single archive first; splits into _partN.mas only if >= 4 GiB)
+    mas_files.extend(build_or_reuse_mas_group(modmgr, stage_dir, f"{venue}_assets", assets_files))
 
     # Materials MAS (if non-empty)
     if materials_files:
-        mat_mas = os.path.join(stage_dir, f"{venue}_materials.mas")
-        if not is_valid_mas_file(mat_mas):
-            print(f"Building {os.path.basename(mat_mas)} ({len(materials_files)} files)...")
-            build_mas_archive(modmgr, mat_mas, materials_files)
-        else:
-            print(f"Reusing {os.path.basename(mat_mas)} ({os.path.getsize(mat_mas):,} bytes)")
-        mas_files.append(mat_mas)
+        mas_files.extend(build_or_reuse_mas_group(modmgr, stage_dir, f"{venue}_materials", materials_files))
 
     # Layout MAS
-    layout_mas = os.path.join(stage_dir, f"{venue}_layout.mas")
-    if not is_valid_mas_file(layout_mas):
-        print(f"Building {os.path.basename(layout_mas)} ({len(layout_files)} files)...")
-        build_mas_archive(modmgr, layout_mas, layout_files)
-    else:
-        print(f"Reusing {os.path.basename(layout_mas)} ({os.path.getsize(layout_mas):,} bytes)")
-    mas_files.append(layout_mas)
+    mas_files.extend(build_or_reuse_mas_group(modmgr, stage_dir, f"{venue}_layout", layout_files))
 
-    # Enforce 4 GiB MAS / RFCMP limit before launching MAS2.exe
+    # Enforce per-MAS 4 GiB limit before launching MAS2.exe
     validate_mas_files_for_rfcmp(mas_files, stage_dir=stage_dir, require_exists=False)
 
     # 2. Prepare RFCMP target path
