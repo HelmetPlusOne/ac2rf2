@@ -839,6 +839,43 @@ class Kn5Tests(unittest.TestCase):
             self.assertTrue(package_rfcmp._is_error_text("Error creating component package"))
             self.assertTrue(package_rfcmp._is_error_text("File is too large"))
 
+    def test_write_dds_preserves_all_zero_alpha_for_cutout_textures(self):
+        import numpy as np
+        import bake_layers
+        import steam_paths
+
+        if not os.path.isfile(steam_paths.TEXCONV):
+            self.skipTest("texconv.exe not installed")
+
+        with tempfile.TemporaryDirectory() as root:
+            tex_dir = os.path.join(root, "textures")
+            tmp_dir = os.path.join(root, "tmp")
+            os.makedirs(tex_dir)
+            os.makedirs(tmp_dir)
+
+            # Reproduces AC's marker_transparent.dds: bright magenta RGB, alpha=0 everywhere
+            rgb = np.zeros((64, 64, 3), dtype=np.float32)
+            rgb[:, :, 0] = 241.0 / 255.0
+            rgb[:, :, 2] = 1.0
+            alpha = np.zeros((64, 64), dtype=np.float32)
+
+            src_name = bake_layers.write_dds(
+                "marker_transparent", rgb, alpha, tex_dir, tmp_dir, steam_paths.TEXCONV
+            )
+            self.assertEqual(src_name, "marker_transparent.dds")
+
+            # Remapping cut-out alpha with -keepcoverage must keep alpha=0 everywhere (not 255)
+            out_name = bake_layers.coverage_copy(
+                src_name, 128, tex_dir, tmp_dir, steam_paths.TEXCONV, rgb_scale=0.7
+            )
+            self.assertIsNotNone(out_name)
+            dec = bake_layers.to_rgba(os.path.join(tex_dir, out_name), tmp_dir, 64, 64)
+            self.assertIsNotNone(dec)
+            self.assertEqual(float(dec[:, :, 3].max()), 0.0)
+            dec_mip = bake_layers.to_rgba(os.path.join(tex_dir, out_name), tmp_dir, 16, 16)
+            self.assertIsNotNone(dec_mip)
+            self.assertEqual(float(dec_mip[:, :, 3].max()), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

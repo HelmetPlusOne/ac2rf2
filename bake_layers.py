@@ -235,6 +235,40 @@ def write_tga(path, rgb, alpha=None):
         f.write(body.tobytes())
 
 
+def write_uncompressed_dds(path, rgb, alpha=None):
+    """Write an uncompressed 32-bit BGRA8 DDS for texconv input.
+
+    DirectXTex's TGA loader assumes any 32-bit TGA whose alpha channel is 0 on
+    every pixel came from a legacy writer that zero-filled the alpha byte, and
+    silently rewrites every alpha to 255. That turned fully transparent AC
+    physics/marker cut-out textures (such as magenta alpha=0 overlays on
+    santa_monica_mtns) into solid opaque surfaces. Uncompressed DDS preserves
+    every alpha value verbatim, including all-zero alpha.
+    """
+    h, w = rgb.shape[:2]
+    hdr = bytearray(128)
+    hdr[0:4] = b"DDS "
+    # dwSize=124, dwFlags=CAPS|HEIGHT|WIDTH|PITCH|PIXELFORMAT (0x100F)
+    struct.pack_into("<IIIIII", hdr, 4, 124, 0x100F, h, w, w * 4, 0)
+    # DDS_PIXELFORMAT: DDPF_RGB|DDPF_ALPHAPIXELS (0x41), 32-bit BGRA (A8R8G8B8)
+    struct.pack_into("<IIIIIIII", hdr, 76, 32, 0x41, 0, 32,
+                     0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000)
+    # dwCaps = DDSCAPS_TEXTURE (0x1000)
+    struct.pack_into("<I", hdr, 108, 0x1000)
+    a = (np.full((h, w), 255, dtype=np.uint8) if alpha is None
+         else np.clip(alpha * 255.0, 0, 255).astype(np.uint8))
+    body = np.dstack([
+        np.clip(rgb[:, :, 2] * 255.0, 0, 255).astype(np.uint8),
+        np.clip(rgb[:, :, 1] * 255.0, 0, 255).astype(np.uint8),
+        np.clip(rgb[:, :, 0] * 255.0, 0, 255).astype(np.uint8),
+        a,
+    ])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(hdr)
+        f.write(body.tobytes())
+
+
 def tile(sample, rx, ry, w, h):
     """Resample a texture as if repeated rx by ry times across the output."""
     if sample is None:
@@ -862,9 +896,9 @@ def even_mip_detail(rgb, alpha, stem, tex_dir, tmp, texconv):
         before.append(r)
         after.append(rel(out))
         part = "%s_m%d" % (stem, k)
-        write_tga(os.path.join(tmp, part + ".tga"), out, alphas[k])
-        run([texconv, "-f", fmt, "-m", "1", SEPALPHA, "-y", "-o", tmp,
-             os.path.join(tmp, part + ".tga")])
+        raw_dds = os.path.join(tmp, "_raw", part + ".dds")
+        write_uncompressed_dds(raw_dds, out, alphas[k])
+        run([texconv, "-f", fmt, "-m", "1", SEPALPHA, "-y", "-o", tmp, raw_dds])
         made = [f for f in os.listdir(tmp)
                 if f.lower() == (part + ".dds").lower()]
         if not made:
@@ -912,11 +946,11 @@ def write_dds(stem, rgb, alpha, tex_dir, tmp, texconv, keep_coverage=None):
     share of texels passing that threshold stays what it is at full size.
     """
     stem = fit_tex_stem(stem)
-    tga = os.path.join(tmp, stem + ".tga")
-    write_tga(tga, rgb, alpha)
+    raw_dds = os.path.join(tmp, "_raw", stem + ".dds")
+    write_uncompressed_dds(raw_dds, rgb, alpha)
     extra = ["-keepcoverage", "%.4f" % keep_coverage] if keep_coverage else []
     run([texconv, "-f", "BC1_UNORM" if alpha is None else "BC3_UNORM",
-         "-m", "0", SEPALPHA] + extra + ["-y", "-o", tex_dir, tga])
+         "-m", "0", SEPALPHA] + extra + ["-y", "-o", tex_dir, raw_dds])
     made = os.path.join(tex_dir, stem + ".DDS")
     final = os.path.join(tex_dir, stem + ".dds")
     if os.path.exists(made) and made != final:
@@ -1059,10 +1093,10 @@ def write_base(mat, det_name, tex_dir, tmp, cap, files, texconv):
     alpha = blend_alpha(mat, base, tex_dir, tmp, files, w, h)
 
     stem = fit_tex_stem(mat["rf2_material"], "_base")
-    tga = os.path.join(tmp, stem + ".tga")
-    write_tga(tga, out, alpha)
+    raw_dds = os.path.join(tmp, "_raw", stem + ".dds")
+    write_uncompressed_dds(raw_dds, out, alpha)
     run([texconv, "-f", "BC1_UNORM" if alpha is None else "BC3_UNORM",
-         "-m", "0", SEPALPHA, "-y", "-o", tex_dir, tga])
+         "-m", "0", SEPALPHA, "-y", "-o", tex_dir, raw_dds])
     made = os.path.join(tex_dir, stem + ".DDS")
     final = os.path.join(tex_dir, stem + ".dds")
     if os.path.exists(made) and made != final:

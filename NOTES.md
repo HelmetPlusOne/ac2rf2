@@ -1315,3 +1315,28 @@ combinations, 842 kn5 files), not only on the seven built so far.
      (`32824` -> `1109` -> `1056`), monitors both status text and `#32770` error
      dialogs, scales stall timeout dynamically with total MAS size (resetting on
      output growth), and verifies final `.rfcmp` size >= sum of input `.mas` sizes.
+
+## 2026-11-24: Bright pink road surface (`DirectXTex` all-zero alpha TGA bug)
+- Investigated bright pink road surfaces in rFactor 2 on
+  `santa_monica_mtns_a_stuntRace`:
+  1. The 69 invisible physics/helper meshes (`1ROAD_stunt`, `3ROAD_stunt`,
+     `4ROAD_stunt`, `2ROAD_piuma`..`6ROAD_piuma`, `1WALL_*`, `GRASSFX_DELETE*`)
+     declare `ksPerPixel` with `alpha_tested=True` and `txDiffuse=marker_transparent.dds`.
+  2. Pixel measurements of the AC source texture `marker_transparent.dds` (64x64 BC3):
+     `RGB=(241, 0, 255)` (bright magenta) and `alpha=0` on `100.0%` of pixels
+     (`min=0, max=0`), so AC discards every pixel and the meshes are invisible.
+  3. Pixel measurements of `bake_layers.py`'s remapped cut-out copies:
+     `marker_transparent_a128.dds` had `RGB=(239, 0, 255), alpha=255` (`100.0%` opaque)
+     and `marker_transparent_a128_d70.dds` had `RGB=(165, 0, 181), alpha=255`,
+     turning all 69 invisible physics meshes into solid bright pink surfaces on top
+     of the asphalt.
+  4. Root cause proved directly with `texconv.exe`: `bake_layers.py` passed
+     uncompressed pixels to `texconv.exe` via 32-bit `.tga` (`write_tga`).
+     DirectXTex's TGA loader treats an all-zero-alpha 32-bit TGA as a legacy
+     zero-filled alpha channel and silently rewrites every pixel's alpha from 0
+     to 255 (both with and without `-keepcoverage`).
+  5. Verified that feeding `texconv.exe` an uncompressed 32-bit BGRA8 `.dds`
+     (`write_uncompressed_dds`) preserves `alpha=0.000` (`min=0, max=0`) across
+     all mip levels (64x64 and 16x16), even with `-keepcoverage 0.7490`.
+- Fixed `bake_layers.py` (`write_dds`, `prepare_base`, `even_detail`) to pass
+  uncompressed BGRA8 `.dds` (`_raw/<stem>.dds`) to `texconv.exe` instead of `.tga`.
