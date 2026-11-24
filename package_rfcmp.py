@@ -451,10 +451,24 @@ def package_track(stage_dir, output_rfcmp=None, name=None, version=None, install
     mas_files.append(layout_mas)
 
     # 2. Prepare RFCMP target path
+    safe_name = track_name.replace(" ", "_")
+    default_filename = f"{safe_name}_v{track_ver}.rfcmp"
     if not output_rfcmp:
-        safe_name = track_name.replace(" ", "_")
-        output_rfcmp = os.path.join(stage_dir, f"{safe_name}_v{track_ver}.rfcmp")
+        if steam_paths.IS_STANDALONE:
+            target_dir = os.path.join(steam_paths.APP_DIR, "out")
+        else:
+            rf2_parent = os.path.dirname(stage_dir)
+            if os.path.basename(rf2_parent).lower() == "rf2":
+                target_dir = os.path.dirname(rf2_parent)
+            else:
+                target_dir = stage_dir
+        output_rfcmp = os.path.join(target_dir, default_filename)
+    elif os.path.isdir(output_rfcmp) or not output_rfcmp.lower().endswith(".rfcmp"):
+        os.makedirs(output_rfcmp, exist_ok=True)
+        output_rfcmp = os.path.join(output_rfcmp, default_filename)
+
     output_rfcmp = os.path.abspath(output_rfcmp)
+    os.makedirs(os.path.dirname(output_rfcmp), exist_ok=True)
 
     # 3. Prepare cmpinfo.dat
     now_filetime = int(time.time() * 10000000 + 116444736000000000)

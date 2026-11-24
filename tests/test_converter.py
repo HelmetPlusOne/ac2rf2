@@ -542,6 +542,73 @@ class Kn5Tests(unittest.TestCase):
         self.assertEqual(seen[2][0], "batch")
         self.assertEqual(seen[2][1][1:], [batch_file])
 
+    def test_convert_multiple_tracks_build_command_install_flag(self):
+        import convert_multiple_tracks
+
+        cmd_default = convert_multiple_tracks.build_command("C:\\track", "layout1")
+        self.assertNotIn("--install", cmd_default)
+        self.assertIn("layout1", cmd_default)
+
+        cmd_custom = convert_multiple_tracks.build_command("C:\\track", None, install="auto")
+        self.assertIn("--install", cmd_custom)
+        self.assertIn("auto", cmd_custom)
+
+    def test_package_rfcmp_target_path_resolution(self):
+        import package_rfcmp
+        import steam_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            # Stage directory: <root>/work/my_track/rf2/my_track
+            track_work = os.path.join(root, "work", "my_track")
+            stage_dir = os.path.join(track_work, "rf2", "my_track")
+            assets_dir = os.path.join(stage_dir, "Assets")
+            os.makedirs(assets_dir)
+            dist_dir = os.path.join(root, "dist")
+            dist_out = os.path.join(dist_dir, "out")
+            os.makedirs(dist_out)
+
+            # Metadata in .gdb
+            with open(os.path.join(stage_dir, "my_track.gdb"), "w") as f:
+                f.write("TrackName = High Plains\n")
+
+            calls = []
+
+            def fake_build_rfcmp(mas2, cmpinfo_content, target_rfcmp):
+                calls.append((target_rfcmp, cmpinfo_content))
+                # Create the file so os.path.getsize succeeds
+                with open(target_rfcmp, "wb") as f:
+                    f.write(b"RFCMP_DATA")
+
+            with mock.patch.object(package_rfcmp, "find_modmgr", return_value="ModMgr.exe"), \
+                    mock.patch.object(package_rfcmp, "find_mas2", return_value="MAS2.exe"), \
+                    mock.patch.object(package_rfcmp, "build_mas_archive"), \
+                    mock.patch.object(package_rfcmp, "build_rfcmp_via_mas2", side_effect=fake_build_rfcmp):
+
+                # 1. Standalone mode: output_rfcmp=None should resolve to dist/out
+                with mock.patch.object(steam_paths, "IS_STANDALONE", True), \
+                        mock.patch.object(steam_paths, "APP_DIR", dist_dir):
+                    package_rfcmp.package_track(stage_dir, output_rfcmp=None)
+                    expected_standalone = os.path.abspath(os.path.join(dist_out, "High_Plains_v1.0.rfcmp"))
+                    self.assertEqual(calls[-1][0], expected_standalone)
+
+                # 2. Standalone mode with target directory: output_rfcmp=dist_out
+                with mock.patch.object(steam_paths, "IS_STANDALONE", True), \
+                        mock.patch.object(steam_paths, "APP_DIR", dist_dir):
+                    package_rfcmp.package_track(stage_dir, output_rfcmp=dist_out)
+                    self.assertEqual(calls[-1][0], expected_standalone)
+
+                # 3. Repo mode: output_rfcmp=None should resolve to track_work (parent of rf2/)
+                with mock.patch.object(steam_paths, "IS_STANDALONE", False):
+                    package_rfcmp.package_track(stage_dir, output_rfcmp=None)
+                    expected_repo = os.path.abspath(os.path.join(track_work, "High_Plains_v1.0.rfcmp"))
+                    self.assertEqual(calls[-1][0], expected_repo)
+
+                # 4. Explicit .rfcmp filename
+                custom_rfcmp = os.path.join(root, "custom_package.rfcmp")
+                with mock.patch.object(steam_paths, "IS_STANDALONE", True):
+                    package_rfcmp.package_track(stage_dir, output_rfcmp=custom_rfcmp)
+                    self.assertEqual(calls[-1][0], os.path.abspath(custom_rfcmp))
+
 
 if __name__ == "__main__":
     unittest.main()

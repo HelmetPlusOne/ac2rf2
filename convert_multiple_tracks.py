@@ -16,12 +16,14 @@ HERE = (
 BUILD_TRACK = os.path.join(HERE, "build_track.py")
 
 
-def build_command(track_dir, layout):
+def build_command(track_dir, layout, install=None):
     resolved = os.path.abspath(track_dir) if not os.path.isabs(track_dir) else track_dir
     if getattr(sys, "frozen", False):
-        command = [sys.executable, "build_track", resolved, "--install", "auto"]
+        command = [sys.executable, "build_track", resolved]
     else:
-        command = [sys.executable, BUILD_TRACK, resolved, "--install", "auto"]
+        command = [sys.executable, BUILD_TRACK, resolved]
+    if install:
+        command.extend(["--install", install])
     if layout:
         command.extend(["--layout", layout])
     return command
@@ -40,8 +42,8 @@ def parse_entry(line):
     return track_dir, layout
 
 
-def convert_file(input_file):
-    """Run ``build_track.py --install auto`` for each entry, skipping errors.
+def convert_file(input_file, install=None):
+    """Run ``build_track.py`` for each entry, skipping errors.
 
     Returns ``(succeeded, skipped)`` where each item is ``(label, detail)``.
     """
@@ -65,7 +67,7 @@ def convert_file(input_file):
     total = len(entries)
     for index, (line_number, track_dir, layout) in enumerate(entries, 1):
         label = "%s (%s)" % (track_dir, layout) if layout else track_dir
-        command = build_command(track_dir, layout)
+        command = build_command(track_dir, layout, install=install)
         print("\n[%d/%d] Converting %s" % (index, total, label), flush=True)
         try:
             result = subprocess.run(command, cwd=HERE)
@@ -92,10 +94,13 @@ def convert_file(input_file):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("input_file", help="text file with one track path and layout per line")
+    ap.add_argument("--install", default=None,
+                    help='an rF2 ModDev\\Locations folder, or "auto" to find it '
+                         'in your Steam libraries')
     args = ap.parse_args(argv)
 
     try:
-        succeeded, skipped = convert_file(args.input_file)
+        succeeded, skipped = convert_file(args.input_file, install=args.install)
     except OSError as exc:
         print("Could not read %s: %s" % (args.input_file, exc), file=sys.stderr)
         return 1

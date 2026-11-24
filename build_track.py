@@ -320,12 +320,8 @@ def main():
         os.environ["AC2RF2_AC_DIR"] = os.path.abspath(args.ac)
     if not args.blender:
         args.blender = steam_paths.BLENDER
-    if args.install is None and steam_paths.IS_STANDALONE:
-        args.install = "auto"
     if args.install == "auto":
         args.install = steam_paths.INSTALL_LOCATIONS
-        if steam_paths.IS_STANDALONE:
-            os.makedirs(args.install, exist_ok=True)
     elif args.install:
         args.install = os.path.abspath(args.install)
 
@@ -434,7 +430,8 @@ def main():
         step(8, "package into MAS and RFCMP")
         import package_rfcmp
         rf2_stage = os.path.join(out, "rf2", track)
-        package_rfcmp.package_track(rf2_stage)
+        target_dir = os.path.join(steam_paths.APP_DIR, "out") if steam_paths.IS_STANDALONE else out
+        package_rfcmp.package_track(rf2_stage, output_rfcmp=target_dir)
 
     if WARNINGS:
         print("\n%d warning(s) -- read these before loading the track:" % len(set(WARNINGS)))
