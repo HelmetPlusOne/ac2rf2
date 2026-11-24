@@ -49,7 +49,7 @@ An optional `ac2rf2.ini` next to `ac2rf2.exe` configures defaults:
 [paths]
 # Optional path to your rFactor 2 installation folder.
 # Detected automatically if omitted (via Steam registry, library VDFs, or drive probes).
-# rf2 = D:\Steam\steamapps\common\rFactor 2
+# rf2 = C:\Program Files (x86)\Steam\steamapps\common\rFactor 2
 
 [track]
 # Scale factor per texture dimension in (0, 1].
