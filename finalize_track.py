@@ -111,7 +111,7 @@ ReflectionMapper=REFMAP0
 
 """
 
-GDB = """{layout}
+GDB = r"""{layout}
 {{
   Filter Properties = StockV8 Historic Modern rFRS TMOD
   Attrition = 30
