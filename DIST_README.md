@@ -5,7 +5,8 @@ locations and RFCMP packages.
 
 Converted tracks are automatically packaged into MAS archives and an `.rfcmp`
 component file placed in the `out\` folder next to `ac2rf2.exe`. You can install
-the `.rfcmp` directly using rFactor 2's Mod Manager or the game launcher.
+the `.rfcmp` in-game using the **Content & Settings -> Manage Content** menu,
+or directly using rFactor 2's Mod Manager (`ModMgr.exe`).
 
 ## Usage
 

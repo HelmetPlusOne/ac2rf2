@@ -13,7 +13,7 @@ Recreates ``dist/`` from scratch with:
   - ``tools/mas2/MAS2.exe``
   - ``data/ac/system/data/surfaces.ini``
   - ``data/rf2/ModDev/Locations/terrain.tdf``
-  - ``out/`` (default automatic RFCMP/MAS install destination for converted tracks, with ``readme.txt``)
+  - ``out/`` (destination for converted track .rfcmp component files, with ``readme.txt``)
   - ``work/`` (intermediate build workspace, with ``readme.txt``)
 
 Usage:
@@ -57,9 +57,13 @@ HIDDEN_IMPORTS = (
 
 
 OUT_README = (
-    "Converted rFactor 2 tracks (MAS archives and RFCMP components) are placed here.\n"
-    "Install the .rfcmp package directly using rFactor 2's Mod Manager (ModMgr.exe)\n"
-    "or the game launcher.\n"
+    "Converted rFactor 2 track component (.rfcmp) files are written here.\n\n"
+    "To install a track into rFactor 2:\n"
+    "1. Launch rFactor 2.\n"
+    "2. In the main menu, navigate to Content & Settings -> Manage Content.\n"
+    "3. Locate the track component and click Install.\n\n"
+    "Alternatively, you can install the .rfcmp package using rFactor 2's\n"
+    "Mod Manager (ModMgr.exe) or copy it into your rFactor 2\\Packages folder.\n"
 )
 
 WORK_README = (
