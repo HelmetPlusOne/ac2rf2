@@ -678,6 +678,45 @@ class Kn5Tests(unittest.TestCase):
                 out
             )
 
+    def test_steam_paths_rf2_discovery_and_texconv(self):
+        import steam_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            # Not an rF2 dir
+            self.assertFalse(steam_paths.is_rf2_dir(root))
+
+            # Make it look like an rF2 dir
+            tools_dir = os.path.join(root, "Support", "Tools", "MapConverter")
+            os.makedirs(tools_dir)
+            texconv_exe = os.path.join(tools_dir, "texconv.exe")
+            with open(texconv_exe, "wb") as f:
+                f.write(b"TEXCONV")
+
+            mas2_exe = os.path.join(root, "Support", "Tools", "MAS2.exe")
+            with open(mas2_exe, "wb") as f:
+                f.write(b"MAS2")
+
+            self.assertTrue(steam_paths.is_rf2_dir(root))
+
+            # find_texconv should locate Support/Tools/MapConverter/texconv.exe
+            found_texconv = steam_paths.find_texconv(root)
+            self.assertEqual(os.path.abspath(found_texconv), os.path.abspath(texconv_exe))
+
+            # Test save_rf2_dir_to_config and load_config
+            steam_paths.save_rf2_dir_to_config(root, base_dir=root)
+            cfg = steam_paths.load_config(base_dir=root)
+            self.assertEqual(cfg["rf2_dir"], root)
+            self.assertEqual(cfg["rf2_dir_source"], "ini")
+
+            # find_rf2_dir with config should return root
+            with mock.patch.object(steam_paths, "load_config", return_value={"rf2_dir": root}):
+                self.assertEqual(steam_paths.find_rf2_dir(prompt=False), os.path.realpath(root))
+
+        # probable_rf2_paths should return non-empty list of path candidates
+        candidates = steam_paths.probable_rf2_paths()
+        self.assertIsInstance(candidates, list)
+        self.assertTrue(len(candidates) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()

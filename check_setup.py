@@ -203,11 +203,12 @@ def check(track_dir=None, layout=None, blender=None, install=None,
     if not os.path.isdir(steam_paths.RF2_DIR):
         rep.problem("rFactor 2 not found (looked for %s)" % steam_paths.RF2_DIR,
                     "If it is installed somewhere Steam does not list, pass "
-                    "--rf2 \"<rFactor 2 folder>\"")
+                    "--rf2 \"<rFactor 2 folder>\" or configure [paths] rf2 in ac2rf2.ini")
     else:
         rep.ok("rFactor 2      %s" % steam_paths.RF2_DIR)
         tdf = os.path.join(steam_paths.LOCATIONS, "terrain.tdf")
-        for path, what in ((steam_paths.TEXCONV, "texconv.exe"),
+        for path, what in ((steam_paths.TEXCONV, "Support\\Tools\\MapConverter\\texconv.exe"),
+                           (os.path.join(steam_paths.RF2_DIR, "Support", "Tools", "MAS2.exe"), "Support\\Tools\\MAS2.exe"),
                            (tdf, "ModDev\\Locations\\terrain.tdf")):
             if not os.path.exists(path):
                 rep.problem("%s is missing from rFactor 2 (%s)" % (what, path),

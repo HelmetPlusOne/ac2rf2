@@ -315,7 +315,12 @@ def main():
     # Every step is a process of its own that finds the games through
     # steam_paths, which reads these, so they are set before anything imports it.
     if args.rf2:
-        os.environ["AC2RF2_RF2_DIR"] = os.path.abspath(args.rf2)
+        rf2_resolved = os.path.abspath(args.rf2)
+        os.environ["AC2RF2_RF2_DIR"] = rf2_resolved
+        steam_paths.RF2_DIR = rf2_resolved
+        steam_paths.LOCATIONS = os.path.join(rf2_resolved, "ModDev", "Locations")
+        steam_paths.INSTALL_LOCATIONS = steam_paths.LOCATIONS
+        steam_paths.TEXCONV = steam_paths.find_texconv(rf2_resolved)
     if args.ac:
         os.environ["AC2RF2_AC_DIR"] = os.path.abspath(args.ac)
     if not args.blender:

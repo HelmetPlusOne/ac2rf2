@@ -8,9 +8,6 @@ Recreates ``dist/`` from scratch with:
   - ``tools/blender/`` (portable Blender 3.6 LTS with ``io_rf2_gmt_release``
     pre-installed inside ``3.6/scripts/addons/``)
   - ``tools/blender_scripts/`` (``blender_stage.py``, ``kn5.py``, ``backdrop.py``)
-  - ``tools/texconv/texconv.exe``
-  - ``tools/modmgr/ModMgr.exe``
-  - ``tools/mas2/MAS2.exe``
   - ``data/ac/system/data/surfaces.ini``
   - ``data/rf2/ModDev/Locations/terrain.tdf``
   - ``out/`` (destination for converted track .rfcmp component files, with ``readme.txt``)
@@ -186,7 +183,6 @@ def main(argv=None):
     dist_dir = os.path.abspath(args.dist)
     blender_src = find_blender_dir(args.blender)
     addon_src = find_addon_dir(blender_src, args.addon)
-    texconv_src = os.path.abspath(args.texconv or steam_paths.TEXCONV)
     ac_dir = os.path.abspath(args.ac or steam_paths.AC_DIR)
     rf2_dir = os.path.abspath(args.rf2 or steam_paths.RF2_DIR)
 
@@ -195,14 +191,9 @@ def main(argv=None):
     if not os.path.isfile(terrain_src):
         terrain_src = os.path.join(rf2_dir, "ModDev", "Locations", "terrain.tdf")
 
-    import package_rfcmp
-    modmgr_src = package_rfcmp.find_modmgr(rf2_dir)
-    mas2_src = package_rfcmp.find_mas2(rf2_dir)
-
     for label, path, check in (
         ("Blender", os.path.join(blender_src, "blender.exe"), os.path.isfile),
         ("Blender addon", addon_src, os.path.isdir),
-        ("texconv.exe", texconv_src, os.path.isfile),
         ("AC surfaces.ini", surfaces_src, os.path.isfile),
         ("rF2 terrain.tdf", terrain_src, os.path.isfile),
     ):
@@ -230,22 +221,7 @@ def main(argv=None):
     for script in BLENDER_SCRIPTS:
         shutil.copy2(os.path.join(HERE, script), os.path.join(scripts_dst, script))
 
-    # 3. Copy texconv.exe.
-    texconv_dst = os.path.join(dist_dir, "tools", "texconv")
-    os.makedirs(texconv_dst, exist_ok=True)
-    shutil.copy2(texconv_src, os.path.join(texconv_dst, "texconv.exe"))
-
-    # 4. Copy rF2 packaging tools if present.
-    if modmgr_src and os.path.isfile(modmgr_src):
-        modmgr_dst = os.path.join(dist_dir, "tools", "modmgr")
-        os.makedirs(modmgr_dst, exist_ok=True)
-        shutil.copy2(modmgr_src, os.path.join(modmgr_dst, "ModMgr.exe"))
-    if mas2_src and os.path.isfile(mas2_src):
-        mas2_dst = os.path.join(dist_dir, "tools", "mas2")
-        os.makedirs(mas2_dst, exist_ok=True)
-        shutil.copy2(mas2_src, os.path.join(mas2_dst, "MAS2.exe"))
-
-    # 5. Copy standalone template data from AC and rF2.
+    # 3. Copy standalone template data from AC and rF2.
     ac_data_dst = os.path.join(dist_dir, "data", "ac", "system", "data")
     rf2_loc_dst = os.path.join(dist_dir, "data", "rf2", "ModDev", "Locations")
     os.makedirs(ac_data_dst, exist_ok=True)
@@ -283,7 +259,6 @@ def main(argv=None):
     ))
     print("  documentation:      README.md")
     print("  tools/blender:      %.1f MB (with %s)" % (dir_size_mb(blender_dst), ADDON_NAME))
-    print("  tools/texconv:      %.1f MB" % dir_size_mb(texconv_dst))
     print("  total size:         %.1f MB" % dir_size_mb(dist_dir))
     print("\nUsage:")
     print("  Drag and drop an AC track folder onto %s" % exe_path)
