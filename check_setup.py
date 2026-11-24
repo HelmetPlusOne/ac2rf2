@@ -196,9 +196,7 @@ def check(track_dir=None, layout=None, blender=None, install=None,
     if os.path.exists(surfaces):
         rep.ok("Assetto Corsa  %s" % steam_paths.AC_DIR)
     else:
-        rep.problem("Assetto Corsa not found (no %s)" % surfaces,
-                    "If it is installed somewhere Steam does not list, pass "
-                    "--ac \"<assettocorsa folder>\"")
+        rep.ok("Assetto Corsa  built-in default surfaces.ini (written to work dir during conversion)")
 
     if not os.path.isdir(steam_paths.RF2_DIR):
         rep.problem("rFactor 2 not found (looked for %s)" % steam_paths.RF2_DIR,

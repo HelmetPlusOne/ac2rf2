@@ -717,6 +717,50 @@ class Kn5Tests(unittest.TestCase):
         self.assertIsInstance(candidates, list)
         self.assertTrue(len(candidates) > 0)
 
+    def test_surfaces_ini_generated_in_work_dir_when_ac_missing(self):
+        import io
+        import contextlib
+        import check_setup
+        import convert_track
+        import steam_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            missing_ac = os.path.join(root, "no_ac")
+            work_dir = os.path.join(root, "work_track")
+            track_dir = os.path.join(root, "track")
+            os.makedirs(os.path.join(track_dir, "data"))
+            with open(os.path.join(track_dir, "data", "surfaces.ini"), "w", encoding="utf-8") as f:
+                f.write("[SURFACE_0]\nKEY=ASPHALT\nFRICTION=0.98\nIS_VALID_TRACK=1\n")
+
+            surfaces = convert_track.load_surfaces(track_dir, missing_ac, work_dir=work_dir)
+            written_path = os.path.join(work_dir, "surfaces.ini")
+            self.assertTrue(os.path.isfile(written_path))
+            for key in ("ROAD", "GRASS", "KERB", "SAND", "ASPHALT"):
+                self.assertIn(key, surfaces)
+            self.assertTrue(surfaces["ROAD"]["valid"])
+            self.assertEqual(surfaces["ASPHALT"]["friction"], 0.98)
+
+            # When AC system/data/surfaces.ini exists, prefer it without writing to a fresh work_dir
+            real_ac = os.path.join(root, "real_ac")
+            ac_surf_dir = os.path.join(real_ac, "system", "data")
+            os.makedirs(ac_surf_dir)
+            ac_surf = os.path.join(ac_surf_dir, "surfaces.ini")
+            with open(ac_surf, "w", encoding="utf-8") as f:
+                f.write("[SURFACE_0]\nKEY=CUSTOMROAD\nFRICTION=0.95\nIS_VALID_TRACK=1\n")
+            fresh_work = os.path.join(root, "fresh_work")
+            resolved = steam_paths.resolve_surfaces_ini(real_ac, work_dir=fresh_work)
+            self.assertEqual(os.path.abspath(resolved), os.path.abspath(ac_surf))
+            self.assertFalse(os.path.exists(os.path.join(fresh_work, "surfaces.ini")))
+
+            # check_setup should report ok (not problem) when AC_DIR does not exist
+            buf = io.StringIO()
+            with mock.patch.object(steam_paths, "AC_DIR", missing_ac), \
+                    contextlib.redirect_stdout(buf):
+                check_setup.check(track_dir=None, need_blender=False)
+            out = buf.getvalue()
+            self.assertIn("built-in default surfaces.ini", out)
+            self.assertNotIn("Assetto Corsa not found", out)
+
 
 if __name__ == "__main__":
     unittest.main()

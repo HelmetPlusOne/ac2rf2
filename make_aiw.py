@@ -902,7 +902,9 @@ def build(track_dir, out_path, layout):
     # is only right inside content\tracks; a track converted from anywhere
     # else (an extracted zip) lost AC's global surfaces.ini that way.
     import steam_paths
-    surf = convert_track.load_surfaces(layout_root, steam_paths.AC_DIR)
+    surf = convert_track.load_surfaces(
+        layout_root, steam_paths.AC_DIR, work_dir=os.path.dirname(os.path.abspath(out_path))
+    )
     # As mesh names carry them: without the digit some tracks write into the
     # key (convert_track.key_stem).
     valid = {convert_track.key_stem(key) for key, info in surf.items()

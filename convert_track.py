@@ -959,11 +959,11 @@ def read_ini(path):
     return cp
 
 
-def load_surfaces(track_dir, ac_root):
+def load_surfaces(track_dir, ac_root=None, work_dir=None):
     """Global AC surfaces plus the track's own overrides, keyed by KEY."""
     out = OrderedDict()
     paths = [
-        os.path.join(ac_root, "system", "data", "surfaces.ini"),
+        steam_paths.resolve_surfaces_ini(ac_root, work_dir=work_dir),
         os.path.join(track_dir, "data", "surfaces.ini"),
     ]
     for path in paths:
@@ -1188,7 +1188,7 @@ def main():
     out_dir = args.out or os.path.join(steam_paths.WORK_ROOT, track_id)
     os.makedirs(out_dir, exist_ok=True)
 
-    surfaces = load_surfaces(layout_root, args.ac_root)
+    surfaces = load_surfaces(layout_root, args.ac_root, work_dir=out_dir)
     print("surface keys: %s" % ", ".join(surfaces))
 
 

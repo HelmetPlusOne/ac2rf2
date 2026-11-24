@@ -26,6 +26,71 @@ DEFAULT_TEXTURE_SCALE_MIN_SIZE = 1024
 DEFAULT_ROAD_SMOOTHNESS = 0.0
 DEFAULT_MESH_COARSENING = 0.0
 
+DEFAULT_AC_SURFACES_INI = """[SURFACE_0]
+KEY=ROAD
+FRICTION=1
+DAMPING=0
+WAV=
+WAV_PITCH=0
+FF_EFFECT=NULL
+DIRT_ADDITIVE=0
+BLACK_FLAG_TIME=0
+IS_VALID_TRACK=1
+SIN_HEIGHT=0
+SIN_LENGTH=0
+IS_PITLANE=0
+VIBRATION_GAIN=0
+VIBRATION_LENGTH=0
+
+[SURFACE_1]
+KEY=GRASS
+FRICTION=0.6
+DAMPING=0
+WAV=grass.wav
+WAV_PITCH=0
+FF_EFFECT=NULL
+DIRT_ADDITIVE=1
+IS_VALID_TRACK=0
+BLACK_FLAG_TIME=0
+SIN_HEIGHT=0.03
+SIN_LENGTH=0.5
+IS_PITLANE=0
+VIBRATION_GAIN=0.2
+VIBRATION_LENGTH=0.6
+
+[SURFACE_2]
+KEY=KERB
+FRICTION=0.92
+DAMPING=0
+WAV=kerb.wav
+WAV_PITCH=1.3
+FF_EFFECT=1
+DIRT_ADDITIVE=0
+BLACK_FLAG_TIME=0
+IS_VALID_TRACK=1
+SIN_HEIGHT=0
+SIN_LENGTH=0
+IS_PITLANE=0
+VIBRATION_GAIN=1.0
+VIBRATION_LENGTH=1.5
+
+[SURFACE_3]
+KEY=SAND
+FRICTION=0.8
+DAMPING=0.1
+WAV=sand.wav
+WAV_PITCH=0
+FF_EFFECT=0
+DIRT_ADDITIVE=1
+IS_VALID_TRACK=0
+BLACK_FLAG_TIME=0
+SIN_HEIGHT=0.04
+SIN_LENGTH=0.5
+IS_PITLANE=0
+VIBRATION_GAIN=0.2
+VIBRATION_LENGTH=0.3
+"""
+
 
 def validate_mesh_coarsening(coarsening):
     """Validate normalized mesh_coarsening in [0.0, 1.0] and return float."""
@@ -297,21 +362,13 @@ def find_texconv(rf2_dir=None):
 APP_DIR = app_dir()
 BUNDLED_BLENDER = os.path.join(APP_DIR, "blender", "blender.exe")
 BUNDLED_BLENDER_STAGE = os.path.join(APP_DIR, "blender", "blender_scripts", "blender_stage.py")
-BUNDLED_AC_DIR = os.path.join(APP_DIR, "data", "ac")
 
 IS_STANDALONE = bool(
     getattr(sys, "frozen", False)
-    or (os.path.isfile(BUNDLED_BLENDER) and os.path.isdir(os.path.join(APP_DIR, "data")))
+    or (os.path.isfile(BUNDLED_BLENDER) and os.path.isfile(BUNDLED_BLENDER_STAGE))
 )
 
-_bundled_ac_ok = os.path.isfile(
-    os.path.join(BUNDLED_AC_DIR, "system", "data", "surfaces.ini")
-)
-
-AC_DIR = (
-    os.environ.get("AC2RF2_AC_DIR")
-    or (BUNDLED_AC_DIR if _bundled_ac_ok else game_dir("assettocorsa"))
-)
+AC_DIR = os.environ.get("AC2RF2_AC_DIR") or game_dir("assettocorsa")
 RF2_DIR = find_rf2_dir(prompt=True)
 TEXCONV = find_texconv(RF2_DIR)
 BLENDER = (
@@ -327,6 +384,26 @@ LOCATIONS = os.path.join(RF2_DIR, "ModDev", "Locations")
 TERRAIN_TDF = os.path.join(LOCATIONS, "terrain.tdf")
 INSTALL_LOCATIONS = LOCATIONS
 WORK_ROOT = os.path.join(APP_DIR, "work") if IS_STANDALONE else os.path.join(APP_DIR, "out")
+
+
+def ensure_default_surfaces_ini(work_dir=None):
+    """Write the built-in AC default ``surfaces.ini`` into ``work_dir`` and return its path."""
+    target_dir = work_dir or WORK_ROOT
+    os.makedirs(target_dir, exist_ok=True)
+    path = os.path.join(target_dir, "surfaces.ini")
+    if not os.path.isfile(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(DEFAULT_AC_SURFACES_INI)
+    return path
+
+
+def resolve_surfaces_ini(ac_root=None, work_dir=None):
+    """Return AC's global ``surfaces.ini``, writing the built-in default into ``work_dir`` if needed."""
+    if ac_root:
+        candidate = os.path.join(ac_root, "system", "data", "surfaces.ini")
+        if os.path.isfile(candidate):
+            return candidate
+    return ensure_default_surfaces_ini(work_dir)
 
 
 def load_config(base_dir=None):
