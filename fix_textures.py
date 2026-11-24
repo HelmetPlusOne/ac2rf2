@@ -56,19 +56,56 @@ def target_size(n, scale=DEFAULT_SCALE, cap=MAX_TEX_DIM):
     return pow2_size(scaled, cap=max_dim)
 
 
+def min_scaled_size(min_size, cap=MAX_TEX_DIM):
+    """Largest power-of-two size strictly smaller than min_size, or 0."""
+    m = int(min_size)
+    if m <= 4:
+        return 0
+    return min(cap, 1 << ((m - 1).bit_length() - 1))
+
+
 def target_dimensions(w, h, scale=DEFAULT_SCALE, min_size=DEFAULT_SCALE_MIN_SIZE,
                       cap=MAX_TEX_DIM):
-    """Compute target (w, h), scaling only when max(w, h) >= min_size."""
-    effective_scale = float(scale) if max(int(w), int(h)) >= int(min_size) else 1.0
-    return (
-        target_size(w, effective_scale, cap=cap),
-        target_size(h, effective_scale, cap=cap),
-    )
+    """Compute target (w, h), scaling only when max(w, h) >= min_size.
+
+    When scaling down, the larger target dimension is kept at or above the
+    largest power-of-two size strictly smaller than min_size (e.g. 512
+    when min_size=1024), preserving aspect ratio.
+    """
+    w, h = int(w), int(h)
+    max_src = max(w, h)
+    if max_src < int(min_size):
+        return (
+            target_size(w, 1.0, cap=cap),
+            target_size(h, 1.0, cap=cap),
+        )
+    effective_scale = float(scale)
+    tw = target_size(w, effective_scale, cap=cap)
+    th = target_size(h, effective_scale, cap=cap)
+    floor = min_scaled_size(min_size, cap=cap)
+    if floor and max(tw, th) < floor:
+        effective_scale = min(1.0, max(effective_scale, floor / float(min(max_src, cap))))
+        tw = target_size(w, effective_scale, cap=cap)
+        th = target_size(h, effective_scale, cap=cap)
+    return (tw, th)
 
 
 def full_levels(w, h):
     """How many mip levels a texture of this size needs to reach 1x1."""
     return max(w, h).bit_length()
+
+
+def expected_dds_bytes(w, h, fourcc, mips):
+    """Expected total byte size of a standard 2D block-compressed DDS file."""
+    if fourcc not in BLOCK or w <= 0 or h <= 0:
+        return None
+    bpb = 8 if fourcc == b"DXT1" else 16
+    total = 128
+    mw, mh = w, h
+    for _ in range(max(1, mips)):
+        total += max(1, (mw + 3) // 4) * max(1, (mh + 3) // 4) * bpb
+        mw, mh = max(1, mw // 2), max(1, mh // 2)
+    return total
 
 
 # AC loads whatever image is inside a .dds name; mod tracks ripped from other
@@ -139,6 +176,8 @@ def main():
         w, h, fourcc, bpp, mips = info
         tw, th = target_dimensions(w, h, args.scale, args.scale_min_size)
         need_resize = (w != tw or h != th)
+        exp_bytes = expected_dds_bytes(w, h, fourcc, mips)
+        actual_bytes = os.path.getsize(os.path.join(tex_dir, f))
         if min(w, h) < 4:
             todo.append((f, w, h, tw, th, bpp, args.format, "under 4x4"))
         elif fourcc not in BLOCK:
@@ -147,6 +186,9 @@ def main():
             reason = ("non-pow2 -> %dx%d" if (not is_pow2(w) or not is_pow2(h))
                       else "scale -> %dx%d") % (tw, th)
             todo.append((f, w, h, tw, th, bpp, SAME_FORMAT[fourcc], reason))
+        elif exp_bytes is not None and actual_bytes != exp_bytes:
+            todo.append((f, w, h, tw, th, bpp, SAME_FORMAT[fourcc],
+                         "bad size %d!=%d" % (actual_bytes, exp_bytes)))
         elif (not args.keep_mips and fourcc in SAME_FORMAT
               and max(w, h) >= MIP_MIN and mips < full_levels(w, h)):
             todo.append((f, w, h, tw, th, bpp, SAME_FORMAT[fourcc],

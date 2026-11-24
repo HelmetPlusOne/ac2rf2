@@ -276,7 +276,7 @@ def main():
     ap.add_argument("--texture-scale", type=float, default=None,
                     help="scale factor per texture dimension (overrides ac2rf2.ini [track] texture_scale; default 1.0)")
     ap.add_argument("--texture-scale-min-size", type=int, default=None,
-                    help="minimum max(w, h) (inclusive) to scale textures (overrides ac2rf2.ini [track] texture_scale_min_size; default 1024)")
+                    help="minimum max(w, h) (inclusive) to scale textures and destination floor bound (overrides ac2rf2.ini [track] texture_scale_min_size; default 1024)")
     ap.add_argument("--road-smoothness", type=float, default=None,
                     help="road surface smoothing in [0.0, 1.0] mapped to sigma in [0m, 8m] (0 disables, 0.5 -> 4m moderate, 1.0 -> 8m max; overrides ac2rf2.ini)")
     args = ap.parse_args()

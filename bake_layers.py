@@ -317,6 +317,9 @@ def bake_material(mat, tex_dir, tmp, cap, target=TARGET_DENSITY, grain=1.0,
     if w * h > budget:
         shrink = (float(budget) / (w * h)) ** 0.5
         w, h = max(4, int(w * shrink)), max(4, int(h * shrink))
+    from fix_textures import pow2_size
+    max_dim = pow2_size(min(cap, 4096))
+    w, h = pow2_size(w, cap=max_dim), pow2_size(h, cap=max_dim)
     upscale = float(w) / bw
 
     base = to_rgba(base_path, tmp, w, h)
@@ -1257,7 +1260,7 @@ def main():
                 alpha = img[:, :, 3] if float(img[:, :, 3].std()) > 0.01 else None
                 if EVEN_MIPS:
                     evened[det] = even_mip_detail(
-                        img[:, :, :3], alpha, os.path.splitext(det)[0] + "_even",
+                        img[:, :, :3], alpha, fit_tex_stem(os.path.splitext(det)[0], "_even"),
                         tex_dir, tmp, args.texconv)
                 else:
                     # Softened about its mean to Highlands' 0.34, every mip

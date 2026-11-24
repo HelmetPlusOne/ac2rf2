@@ -296,14 +296,28 @@ class Kn5Tests(unittest.TestCase):
     def test_target_dimensions_scales_and_snaps_power_of_two(self):
         import fix_textures
 
-        # Scaled down when >= min_size
+        # Scaled down when >= min_size, respecting destination floor (512 for min_size=1024)
         self.assertEqual(fix_textures.target_dimensions(2048, 2048, scale=0.5, min_size=1024), (1024, 1024))
         self.assertEqual(fix_textures.target_dimensions(1024, 512, scale=0.5, min_size=1024), (512, 256))
+        # Destination floor prevents scaling 1024 down to 256
+        self.assertEqual(fix_textures.target_dimensions(1024, 1024, scale=0.25, min_size=1024), (512, 512))
         # Not scaled down when < min_size
         self.assertEqual(fix_textures.target_dimensions(512, 512, scale=0.5, min_size=1024), (512, 512))
         self.assertEqual(fix_textures.target_dimensions(256, 128, scale=0.5, min_size=1024), (256, 128))
         # Non power of two snaps up to power of two
         self.assertEqual(fix_textures.target_dimensions(300, 200, scale=1.0, min_size=1024), (512, 256))
+
+    def test_expected_dds_bytes(self):
+        import fix_textures
+
+        # DXT1 4x4 with 3 mips: header (128) + 4x4 (8) + 2x2 (8) + 1x1 (8) = 152 bytes
+        self.assertEqual(fix_textures.expected_dds_bytes(4, 4, b"DXT1", 3), 152)
+        # DXT5 4x4 with 3 mips: header (128) + 4x4 (16) + 2x2 (16) + 1x1 (16) = 176 bytes
+        self.assertEqual(fix_textures.expected_dds_bytes(4, 4, b"DXT5", 3), 176)
+        # DXT1 1024x1024 1 mip: 128 + 256*256*8 = 524416 bytes
+        self.assertEqual(fix_textures.expected_dds_bytes(1024, 1024, b"DXT1", 1), 128 + 256 * 256 * 8)
+        # Non-block format returns None
+        self.assertIsNone(fix_textures.expected_dds_bytes(100, 100, b"RGBA", 1))
 
     def test_load_config_reads_texture_scaling_and_road_smoothness(self):
         import steam_paths

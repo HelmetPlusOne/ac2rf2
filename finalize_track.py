@@ -576,12 +576,18 @@ def main():
         coll = "True" if row["physical"] else "False"
         if row["physical"]:
             phys += 1
-        # Timing strips collide but must not act as ground, or the car sits on
-        # them instead of the road.
-        hat = "False" if row.get("timing") else coll
-        # AC marks some meshes as collision-only shells. Drawing them puts a
-        # blank wall over the real road and barriers, so keep the collision but
-        # mark them non-renderable so gMotor does not bind shaders or textures.
+        # Timing gates and collision-only shells must never be rendered. Check
+        # timing first because blender_stage records timing rows without a
+        # "render" key (so row.get("render", True) is True).
+        if row.get("timing"):
+            lines.append(
+                "Instance=%s\n{\n"
+                "  Render=False Change=False VisGroups=(32)\n"
+                "  MeshFile=%s CollTarget=True HATTarget=False\n"
+                "  Response=VEHICLE,TIMING\n}\n"
+                % (name, row["gmt"])
+            )
+            continue
         if not row.get("render", True):
             lines.append(
                 "Instance=%s\n{\n"

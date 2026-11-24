@@ -13,6 +13,8 @@ import sys
 import json
 import struct
 
+from fix_textures import expected_dds_bytes
+
 # Measured by exporting one mesh twice with different thresholds and diffing:
 # exactly one byte moved. From the START of the texture name, not the end --
 # the name sits in a fixed size field, so measuring from the end shifts with
@@ -199,14 +201,24 @@ def main():
     # 1x1 placeholders and every one failed to load).
     unloadable = []
     for t in sorted(on_disk):
-        with open(os.path.join(map_dir, t), "rb") as fh:
-            head = fh.read(20)
+        source = os.path.join(map_dir, t)
+        with open(source, "rb") as fh:
+            head = fh.read(128)
         if not t.lower().endswith(".dds"):
             continue                    # a real PNG/TGA, which rF2 loads
-        if head[:4] != b"DDS ":
+        if len(head) < 128 or head[:4] != b"DDS ":
             unloadable.append(t + " (not DDS)")
-        elif min(struct.unpack_from("<II", head, 12)) < 4:
-            unloadable.append(t + " (under 4x4)")
+        else:
+            h, w = struct.unpack_from("<II", head, 12)
+            mips = struct.unpack_from("<I", head, 28)[0]
+            fourcc = head[84:88]
+            exp_bytes = expected_dds_bytes(w, h, fourcc, mips)
+            actual_bytes = os.path.getsize(source)
+            if min(w, h) < 4:
+                unloadable.append(t + " (under 4x4)")
+            elif exp_bytes is not None and actual_bytes != exp_bytes:
+                unloadable.append("%s (malformed DDS size %d != %d)"
+                                  % (t, actual_bytes, exp_bytes))
     if unloadable:
         problems.append("textures rF2 cannot load: %s" % unloadable[:5])
 
