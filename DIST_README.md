@@ -1,7 +1,8 @@
 # Assetto Corsa to rFactor 2 Track Converter
 
-Standalone Windows converter for converting Assetto Corsa tracks into rFactor 2
-locations and RFCMP packages.
+Windows converter for converting Assetto Corsa tracks into rFactor 2
+locations and RFCMP packages. Requires an existing rFactor 2 installation
+(Assetto Corsa installation is not required).
 
 Converted tracks are automatically packaged into MAS archives and an `.rfcmp`
 component file placed in the `out\` folder next to `ac2rf2.exe`. You can install
@@ -73,9 +74,10 @@ CLI options `--texture-scale`, `--texture-scale-min-size`, `--road-smoothness`,
 
 ## rFactor 2 Detection and Required Tools
 
-This converter does not bundle proprietary rFactor 2 executable files. It
-automatically locates your existing rFactor 2 Steam installation without
-scanning the entire disk by checking:
+An existing **rFactor 2 installation is required**. This converter does not
+bundle proprietary rFactor 2 executable files or game data. It automatically
+locates your rFactor 2 Steam installation without scanning the entire disk by
+checking:
 1. Steam uninstall registry keys (`Steam App 365960`).
 2. Configured Steam library paths (`libraryfolders.vdf`).
 3. Standard Steam library locations on `Program Files` and the roots of all available drives (`D:\Steam`, `D:\SteamLibrary`, etc.).
@@ -90,7 +92,7 @@ All required utilities and resources are run directly from your rFactor 2 instal
 
 ## Bundled Tools and Third-Party Licenses
 
-This standalone package includes third-party software components:
+This package includes third-party software components:
 
 | Component | Path | License |
 | :--- | :--- | :--- |
