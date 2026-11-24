@@ -1,14 +1,8 @@
 # Assetto Corsa to rFactor 2 Track Converter
 
-Windows converter for converting Assetto Corsa tracks into rFactor 2
-locations and RFCMP packages. Simply drag and drop an Assetto Corsa track
-folder (or `.zip` archive) onto `ac2rf2.exe` to convert it. Requires an
-existing rFactor 2 installation.
+Windows converter for converting Assetto Corsa tracks into rFactor 2 locations and RFCMP packages. Simply drag and drop an Assetto Corsa track folder (or `.zip` archive) onto `ac2rf2.exe` to convert it. Requires an existing rFactor 2 installation.
 
-Converted tracks are automatically packaged into MAS archives and an `.rfcmp`
-component file placed in the `out\` folder next to `ac2rf2.exe`. You can install
-the `.rfcmp` in-game using the **Content & Settings -> Manage Content** menu,
-or directly using rFactor 2's Mod Manager (`ModMgr.exe`).
+Converted tracks are automatically packaged into MAS archives and an `.rfcmp` component file placed in the `out\` folder next to `ac2rf2.exe`. Copy this file to `Steam\steamapps\common\rFactor 2\Packages`. You can install the `.rfcmp` in-game using the **Content & Settings -> Manage Content** menu.
 
 ## Usage
 
