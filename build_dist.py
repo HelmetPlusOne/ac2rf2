@@ -5,9 +5,9 @@ Recreates ``dist/`` from scratch with:
     ``build_track``, ``convert_multiple_tracks``, ``package_rfcmp``, and drag-and-drop support)
   - ``ac2rf2.ini`` (default configuration, e.g. ``[track] texture_scale``)
   - ``README.md`` (usage instructions and list of bundled tools)
-  - ``tools/blender/`` (portable Blender 3.6 LTS with ``io_rf2_gmt_release``
+  - ``blender/`` (portable Blender 3.6 LTS with ``io_rf2_gmt_release``
     pre-installed inside ``3.6/scripts/addons/``)
-  - ``tools/blender_scripts/`` (``blender_stage.py``, ``kn5.py``, ``backdrop.py``)
+  - ``blender/blender_scripts/`` (``blender_stage.py``, ``kn5.py``, ``backdrop.py``, ``mesh_coarsen.py``)
   - ``data/ac/system/data/surfaces.ini``
   - ``out/`` (destination for converted track .rfcmp component files, with ``readme.txt``)
   - ``work/`` (intermediate build workspace, with ``readme.txt``)
@@ -50,6 +50,71 @@ HIDDEN_IMPORTS = (
     "track_zip",
     "verify_install",
 )
+
+DEFAULT_AC_SURFACES_INI = """[SURFACE_0]
+KEY=ROAD
+FRICTION=1
+DAMPING=0
+WAV=
+WAV_PITCH=0
+FF_EFFECT=NULL
+DIRT_ADDITIVE=0
+BLACK_FLAG_TIME=0
+IS_VALID_TRACK=1
+SIN_HEIGHT=0
+SIN_LENGTH=0
+IS_PITLANE=0
+VIBRATION_GAIN=0
+VIBRATION_LENGTH=0
+
+[SURFACE_1]
+KEY=GRASS
+FRICTION=0.6
+DAMPING=0
+WAV=grass.wav
+WAV_PITCH=0
+FF_EFFECT=NULL
+DIRT_ADDITIVE=1
+IS_VALID_TRACK=0
+BLACK_FLAG_TIME=0
+SIN_HEIGHT=0.03
+SIN_LENGTH=0.5
+IS_PITLANE=0
+VIBRATION_GAIN=0.2
+VIBRATION_LENGTH=0.6
+
+[SURFACE_2]
+KEY=KERB
+FRICTION=0.92
+DAMPING=0
+WAV=kerb.wav
+WAV_PITCH=1.3
+FF_EFFECT=1
+DIRT_ADDITIVE=0
+BLACK_FLAG_TIME=0
+IS_VALID_TRACK=1
+SIN_HEIGHT=0
+SIN_LENGTH=0
+IS_PITLANE=0
+VIBRATION_GAIN=1.0
+VIBRATION_LENGTH=1.5
+
+[SURFACE_3]
+KEY=SAND
+FRICTION=0.8
+DAMPING=0.1
+WAV=sand.wav
+WAV_PITCH=0
+FF_EFFECT=0
+DIRT_ADDITIVE=1
+IS_VALID_TRACK=0
+BLACK_FLAG_TIME=0
+SIN_HEIGHT=0.04
+SIN_LENGTH=0.5
+IS_PITLANE=0
+VIBRATION_GAIN=0.2
+VIBRATION_LENGTH=0.3
+"""
 
 
 OUT_README = (
@@ -182,15 +247,17 @@ def main(argv=None):
     dist_dir = os.path.abspath(args.dist)
     blender_src = find_blender_dir(args.blender)
     addon_src = find_addon_dir(blender_src, args.addon)
-    ac_dir = os.path.abspath(args.ac or steam_paths.AC_DIR)
-    rf2_dir = os.path.abspath(args.rf2 or steam_paths.RF2_DIR)
 
-    surfaces_src = os.path.join(ac_dir, "system", "data", "surfaces.ini")
+    surfaces_content = DEFAULT_AC_SURFACES_INI
+    if args.ac:
+        explicit_surfaces = os.path.join(os.path.abspath(args.ac), "system", "data", "surfaces.ini")
+        if os.path.isfile(explicit_surfaces):
+            with open(explicit_surfaces, "r", encoding="utf-8") as f:
+                surfaces_content = f.read()
 
     for label, path, check in (
         ("Blender", os.path.join(blender_src, "blender.exe"), os.path.isfile),
         ("Blender addon", addon_src, os.path.isdir),
-        ("AC surfaces.ini", surfaces_src, os.path.isfile),
     ):
         if not check(path):
             raise SystemExit("Required source missing (%s): %s" % (label, path))
@@ -201,7 +268,7 @@ def main(argv=None):
     os.makedirs(dist_dir, exist_ok=True)
 
     # 1. Copy Blender + embed io_rf2_gmt_release directly in Blender's addons folder.
-    blender_dst = os.path.join(dist_dir, "tools", "blender")
+    blender_dst = os.path.join(dist_dir, "blender")
     print("Copying Blender -> %s ..." % blender_dst, flush=True)
     shutil.copytree(blender_src, blender_dst, ignore=_ignore_blender)
     addon_dst = os.path.join(blender_dst, "3.6", "scripts", "addons", ADDON_NAME)
@@ -211,15 +278,16 @@ def main(argv=None):
     shutil.copytree(addon_src, addon_dst, ignore=_ignore_pycache)
 
     # 2. Copy plain scripts executed inside Blender's own Python runtime.
-    scripts_dst = os.path.join(dist_dir, "tools", "blender_scripts")
+    scripts_dst = os.path.join(blender_dst, "blender_scripts")
     os.makedirs(scripts_dst, exist_ok=True)
     for script in BLENDER_SCRIPTS:
         shutil.copy2(os.path.join(HERE, script), os.path.join(scripts_dst, script))
 
-    # 3. Copy standalone template data from AC.
+    # 3. Write standalone template data for AC straight from Python.
     ac_data_dst = os.path.join(dist_dir, "data", "ac", "system", "data")
     os.makedirs(ac_data_dst, exist_ok=True)
-    shutil.copy2(surfaces_src, os.path.join(ac_data_dst, "surfaces.ini"))
+    with open(os.path.join(ac_data_dst, "surfaces.ini"), "w", encoding="utf-8") as f:
+        f.write(surfaces_content)
 
     # 6. Copy standalone README.md, ac2rf2.ini, and create out/ and work/ folders with readme.txt.
     dist_readme = os.path.join(HERE, "DIST_README.md")
@@ -250,7 +318,7 @@ def main(argv=None):
         os.path.getsize(exe_path) / (1024.0 * 1024.0),
     ))
     print("  documentation:      README.md")
-    print("  tools/blender:      %.1f MB (with %s)" % (dir_size_mb(blender_dst), ADDON_NAME))
+    print("  blender:            %.1f MB (with %s)" % (dir_size_mb(blender_dst), ADDON_NAME))
     print("  total size:         %.1f MB" % dir_size_mb(dist_dir))
     print("\nUsage:")
     print("  Drag and drop an AC track folder onto %s" % exe_path)

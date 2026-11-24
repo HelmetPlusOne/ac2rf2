@@ -94,7 +94,7 @@ This standalone package includes third-party software components:
 
 | Component | Path | License |
 | :--- | :--- | :--- |
-| **Blender 3.6 LTS** | `tools\blender\` | **GNU GPL v2 or later** — Blender Foundation (https://www.blender.org). |
-| **rF2 GMT Exporter** | `tools\blender\3.6\scripts\addons\io_rf2_gmt_release\` | **GNU GPL v2 or later** — Studio 397 (https://forum.studio-397.com). |
+| **Blender 3.6 LTS** | `blender\` | **GNU GPL v2 or later** — Blender Foundation (https://www.blender.org). |
+| **rF2 GMT Exporter** | `blender\3.6\scripts\addons\io_rf2_gmt_release\` | **GNU GPL v2 or later** — Studio 397 (https://forum.studio-397.com). |
 
 This converter is licensed under the GNU General Public License v3 (see `LICENSE`).

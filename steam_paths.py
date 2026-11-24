@@ -295,8 +295,8 @@ def find_texconv(rf2_dir=None):
 
 
 APP_DIR = app_dir()
-BUNDLED_BLENDER = os.path.join(APP_DIR, "tools", "blender", "blender.exe")
-BUNDLED_BLENDER_STAGE = os.path.join(APP_DIR, "tools", "blender_scripts", "blender_stage.py")
+BUNDLED_BLENDER = os.path.join(APP_DIR, "blender", "blender.exe")
+BUNDLED_BLENDER_STAGE = os.path.join(APP_DIR, "blender", "blender_scripts", "blender_stage.py")
 BUNDLED_AC_DIR = os.path.join(APP_DIR, "data", "ac")
 
 IS_STANDALONE = bool(
