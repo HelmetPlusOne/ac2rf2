@@ -609,6 +609,75 @@ class Kn5Tests(unittest.TestCase):
                     package_rfcmp.package_track(stage_dir, output_rfcmp=custom_rfcmp)
                     self.assertEqual(calls[-1][0], os.path.abspath(custom_rfcmp))
 
+    def test_check_setup_disabled_settings_formatting(self):
+        import io
+        import contextlib
+        import check_setup
+        import steam_paths
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            # All disabled
+            check_setup.check(
+                track_dir=None,
+                need_blender=False,
+                texture_scale=1.0,
+                road_smoothness=0.0,
+                mesh_coarsening=0.0,
+            )
+        out = buf.getvalue()
+        self.assertIn("texture_scale=1.0 (disabled)", out)
+        self.assertIn("road_smoothness=0.0 (disabled)", out)
+        self.assertIn("mesh_coarsening=0.0 (disabled)", out)
+
+        # Enabled values should NOT have "(disabled)"
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            check_setup.check(
+                track_dir=None,
+                need_blender=False,
+                texture_scale=0.5,
+                road_smoothness=0.25,
+                mesh_coarsening=0.5,
+            )
+        out2 = buf2.getvalue()
+        self.assertIn("texture_scale=0.5", out2)
+        self.assertNotIn("texture_scale=0.5 (disabled)", out2)
+        self.assertIn("road_smoothness=0.25", out2)
+        self.assertNotIn("road_smoothness=0.25 (disabled)", out2)
+        self.assertIn("mesh_coarsening=0.5", out2)
+        self.assertNotIn("mesh_coarsening=0.5 (disabled)", out2)
+
+    def test_package_rfcmp_prints_mas2_capitals_message(self):
+        import io
+        import contextlib
+        import package_rfcmp
+        import steam_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            stage_dir = os.path.join(root, "track", "rf2", "track")
+            os.makedirs(os.path.join(stage_dir, "Assets"))
+            with open(os.path.join(stage_dir, "track.gdb"), "w") as f:
+                f.write("TrackName = TestTrack\n")
+
+            def fake_rfcmp(mas2, cmpinfo, out_file):
+                with open(out_file, "wb") as f:
+                    f.write(b"PKG")
+
+            buf = io.StringIO()
+            with mock.patch.object(package_rfcmp, "find_modmgr", return_value="ModMgr.exe"), \
+                    mock.patch.object(package_rfcmp, "find_mas2", return_value="MAS2.exe"), \
+                    mock.patch.object(package_rfcmp, "build_mas_archive"), \
+                    mock.patch.object(package_rfcmp, "build_rfcmp_via_mas2", side_effect=fake_rfcmp), \
+                    contextlib.redirect_stdout(buf):
+                package_rfcmp.package_track(stage_dir)
+
+            out = buf.getvalue()
+            self.assertIn(
+                "RF2 MAS2.EXE WINDOW WILL BE OPENED AND CLOSED AUTOMATICALLY TO CREATE THE RFCMP FILE.",
+                out
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -428,6 +428,7 @@ def main():
                 os.remove(os.path.join(lay, f))
     if args.package:
         step(8, "package into MAS and RFCMP")
+        print("   RF2 MAS2.EXE WINDOW WILL BE OPENED AND CLOSED AUTOMATICALLY TO CREATE THE RFCMP FILE.")
         import package_rfcmp
         rf2_stage = os.path.join(out, "rf2", track)
         target_dir = os.path.join(steam_paths.APP_DIR, "out") if steam_paths.IS_STANDALONE else out

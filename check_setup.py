@@ -146,13 +146,27 @@ def check(track_dir=None, layout=None, blender=None, install=None,
         cfg = None
 
     if cfg is not None:
+        DISABLED_SETTINGS = {
+            "texture_scale": 1.0,
+            "road_smoothness": 0.0,
+            "mesh_coarsening": 0.0,
+        }
+
         def _fmt(key, cli_val):
             cfg_val = cfg[key]
             src = cfg.get(key + "_source", "default")
+            val = cfg_val if cli_val is None else cli_val
+            dis = ""
+            if key in DISABLED_SETTINGS:
+                try:
+                    if float(val) == DISABLED_SETTINGS[key]:
+                        dis = " (disabled)"
+                except (ValueError, TypeError):
+                    pass
             if cli_val is not None and cli_val != cfg_val:
-                return "%s=%s [from CLI, %s=%s]" % (key, cli_val, src, cfg_val)
+                return "%s=%s%s [from CLI, %s=%s]" % (key, cli_val, dis, src, cfg_val)
             tag = "from ini" if src == "ini" else "default"
-            return "%s=%s [%s]" % (key, cfg_val if cli_val is None else cli_val, tag)
+            return "%s=%s%s [%s]" % (key, val, dis, tag)
 
         summary = ", ".join((
             _fmt("texture_scale", texture_scale),

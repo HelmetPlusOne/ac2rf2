@@ -506,6 +506,7 @@ def package_track(stage_dir, output_rfcmp=None, name=None, version=None, install
 
     # 4. Run MAS2 automation
     print(f"Compiling RFCMP via MAS2: {output_rfcmp}...")
+    print("RF2 MAS2.EXE WINDOW WILL BE OPENED AND CLOSED AUTOMATICALLY TO CREATE THE RFCMP FILE.")
     build_rfcmp_via_mas2(mas2, cmpinfo_content, output_rfcmp)
     size_mb = os.path.getsize(output_rfcmp) / (1024 * 1024)
     print(f"Successfully created: {output_rfcmp} ({size_mb:.1f} MB)")

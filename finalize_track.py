@@ -659,7 +659,7 @@ def main():
                      args.road_smoothness, eff_road_smooth_sigma,
                      rs["dy_rms_mm"], rs["dy_max_mm"]))
     else:
-        print("  road smooth disabled (road_smoothness=%s, effective road_smooth_sigma=0.0m)"
+        print("  road smooth disabled (road_smoothness=%s (disabled), effective road_smooth_sigma=0.0m)"
               % (args.road_smoothness,))
 
     n_tex = 0

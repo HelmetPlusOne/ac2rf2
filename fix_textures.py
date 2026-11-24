@@ -198,8 +198,9 @@ def main():
         print("nothing to convert")
         return
 
-    print("re-encoding %d textures (scale=%.2f, min_size=%d)"
-          % (len(todo), args.scale, args.scale_min_size))
+    scale_dis = " (disabled)" if float(args.scale) == 1.0 else ""
+    print("re-encoding %d textures (scale=%.2f%s, min_size=%d)"
+          % (len(todo), args.scale, scale_dis, args.scale_min_size))
 
     def convert(job, work):
         """One texture; returns the line to print and whether it worked."""

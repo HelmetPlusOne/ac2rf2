@@ -93,12 +93,31 @@ def _launched_from_explorer():
         return False
 
 
-def _pause_if_explorer():
-    if _launched_from_explorer():
+def _pause():
+    """Wait for a key press so the CLI window does not close automatically."""
+    if os.environ.get("AC2RF2_NO_PAUSE"):
+        return
+    try:
+        if not (sys.stdin and sys.stdin.isatty()):
+            return
+    except Exception:
+        return
+    try:
+        print("\nPress any key to close...")
+        sys.stdout.flush()
+        import msvcrt
+        while msvcrt.kbhit():
+            msvcrt.getch()
+        msvcrt.getch()
+    except Exception:
         try:
             input("\nPress Enter to close...")
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             pass
+
+
+def _pause_if_explorer():
+    _pause()
 
 
 def _dispatch(module_name, prog_name, args):
@@ -240,7 +259,10 @@ def main(argv=None):
     key = cmd.lower()
     if key in COMMANDS:
         mod_name = COMMANDS[key]
-        return _dispatch(mod_name, "%s %s" % (prog, cmd), raw[1:])
+        try:
+            return _dispatch(mod_name, "%s %s" % (prog, cmd), raw[1:])
+        finally:
+            _pause_if_explorer()
 
     if _is_track_path(cmd) or (os.path.isfile(cmd) and cmd.lower().endswith(".txt")):
         code = 1
