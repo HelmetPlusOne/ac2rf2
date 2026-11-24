@@ -1185,8 +1185,7 @@ def main():
     placed = placements(track_dir, args.layout)
     for w in warnings:
         print("   WARNING %s" % w)
-    here = os.path.dirname(os.path.abspath(__file__))
-    out_dir = args.out or os.path.join(here, "out", track_id)
+    out_dir = args.out or os.path.join(steam_paths.WORK_ROOT, track_id)
     os.makedirs(out_dir, exist_ok=True)
 
     surfaces = load_surfaces(layout_root, args.ac_root)

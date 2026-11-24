@@ -13,8 +13,10 @@ import shutil
 import sys
 import zipfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ZIPS = os.path.join(HERE, "out", "_zips")
+import steam_paths
+
+HERE = steam_paths.APP_DIR
+ZIPS = os.path.join(steam_paths.WORK_ROOT, "_zips")
 
 
 def say(text):
