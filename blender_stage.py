@@ -22,6 +22,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from kn5 import KN5  # noqa: E402
 import backdrop  # noqa: E402
+import mesh_coarsen  # noqa: E402
 
 ADDON = "io_rf2_gmt_release"
 
@@ -235,6 +236,28 @@ def split_node(node):
         yield verts, uvs, faces, (normals if src_n is not None else None)
 
 
+def split_geom(verts, uvs, faces, normals):
+    """Yield (verts, uvs, faces, normals) chunks of at most MAX_TRIS triangles."""
+    ntri = len(faces)
+    src_n = normals if normals and len(normals) == len(verts) else None
+    for start in range(0, ntri, MAX_TRIS):
+        remap = {}
+        c_verts, c_uvs, c_faces, c_normals = [], [], [], []
+        for a, b, c in faces[start:start + MAX_TRIS]:
+            face = []
+            for vi in (a, b, c):
+                local = remap.get(vi)
+                if local is None:
+                    local = remap[vi] = len(c_verts)
+                    c_verts.append(verts[vi])
+                    c_uvs.append(uvs[vi])
+                    if src_n is not None:
+                        c_normals.append(src_n[vi])
+                face.append(local)
+            c_faces.append(tuple(face))
+        yield c_verts, c_uvs, c_faces, (c_normals if src_n is not None else None)
+
+
 def lift_off_surface(verts, faces, amount):
     """Nudge a decal along its own normal, away from what it is lying on.
 
@@ -268,7 +291,8 @@ def lift_off_surface(verts, faces, amount):
 
 
 def build_mesh(geom, matrix, name, material, template_empty, template_ob, coll,
-               uv_repeat=1.0, uv_b=None, uv_d=None, lift=0.0):
+               uv_repeat=1.0, uv_b=None, uv_d=None, lift=0.0,
+               smooth_normals=False):
     verts, uvs, faces = geom[:3]
     normals = geom[3] if len(geom) > 3 else None
     # Bake the placement into the vertices and keep every object transform at
@@ -302,6 +326,11 @@ def build_mesh(geom, matrix, name, material, template_empty, template_ob, coll,
     # triangles are more than 60 degrees off. The exporter writes split
     # normals (measured with probe_normals.py), which is where these live.
     if normals and len(normals) == len(me.vertices):
+        if smooth_normals:
+            # Smooth-shaded polygons encode custom split normals relative to
+            # shared vertex normals rather than each flat triangle face normal,
+            # avoiding 16-bit clnor per-corner jitter that blocks vertex dedup.
+            me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
         me.use_auto_smooth = True
         me.normals_split_custom_set_from_vertices(normals)
     # clear_geometry() drops every layer, and the exporter reads all of these
@@ -467,6 +496,10 @@ def main():
     # A trim, not a correction. The translation is right without it now.
     diffuse_scale = float(args[args.index("--gain") + 1]) if "--gain" in args else 1.0
     ambient_scale = diffuse_scale
+    coarsening = (
+        mesh_coarsen.validate_coarsening(args[args.index("--coarsening") + 1])
+        if "--coarsening" in args else 0.0
+    )
     os.makedirs(out_dir, exist_ok=True)
 
     addon_utils.enable(ADDON, default_set=True, persistent=True)
@@ -908,6 +941,9 @@ def main():
     # mesh counts as SHARD_MESH_COST triangles on top of its own.
     load = [0] * shards
     seq = -1
+    coarsen_meshes = 0
+    coarsen_before = 0
+    coarsen_after = 0
 
     for fi, path in enumerate(data["kn5"]):
         k = KN5(path, geometry=True, placement=data.get("placements", {}).get(path))
@@ -945,7 +981,55 @@ def main():
                     continue
 
             matrix = AC_TO_RF2 @ world_matrix(node)
-            parts = list(split_node(node))
+            if coarsening > 0.0:
+                ntri = node.index_count // 3
+                bb_role = mesh_coarsen.classify_billboard_role(row, ntris=ntri)
+                bb_keep = mesh_coarsen.billboard_keep_ratio(coarsening, bb_role)
+                role = mesh_coarsen.classify_mesh_role(row, ntris=ntri)
+                ratio = mesh_coarsen.coarsen_ratio(coarsening, role)
+                if bb_keep < 1.0 or ratio < 1.0:
+                    idx = node.indices
+                    raw_verts = [tuple(v) for v in node.verts]
+                    raw_faces = [
+                        (idx[t * 3], idx[t * 3 + 1], idx[t * 3 + 2])
+                        for t in range(ntri)
+                    ]
+                    raw_n = (
+                        node.normals
+                        if node.normals and len(node.normals) == len(raw_verts)
+                        else None
+                    )
+                    c_verts, c_uvs, c_faces, c_norms = (
+                        raw_verts, node.uvs, raw_faces, raw_n
+                    )
+                    if bb_keep < 1.0:
+                        _min_k, max_comp_tris = mesh_coarsen.BILLBOARD_ROLES[bb_role]
+                        c_verts, c_uvs, c_faces, c_norms = (
+                            mesh_coarsen.thin_billboard_cards(
+                                raw_verts, node.uvs, raw_faces, raw_n,
+                                bb_keep, max_comp_tris=max_comp_tris,
+                            )
+                        )
+                    if len(c_faces) == ntri and ratio < 1.0:
+                        is_visual = bool(row.get("render", True))
+                        c_verts, c_uvs, c_faces, c_norms = (
+                            mesh_coarsen.coarsen_geometry(
+                                raw_verts, node.uvs, raw_faces, raw_n, ratio,
+                                preserve_uvs=is_visual,
+                                preserve_normals=is_visual,
+                            )
+                        )
+                    if len(c_faces) < ntri:
+                        coarsen_meshes += 1
+                        coarsen_before += ntri
+                        coarsen_after += len(c_faces)
+                        parts = list(split_geom(c_verts, c_uvs, c_faces, c_norms))
+                    else:
+                        parts = list(split_node(node))
+                else:
+                    parts = list(split_node(node))
+            else:
+                parts = list(split_node(node))
             # Cut the clear sky out of the mesh so what remains can be drawn
             # opaque: it then writes depth and sorts behind the trees. Only
             # where the alpha test is not doing that already. A cut-out
@@ -984,7 +1068,8 @@ def main():
                                         if row["rf2_material"] in two_stage_used
                                         else None),
                                        uv_d_of.get(row["rf2_material"]),
-                                       DECAL_LIFT if row.get("decal") else 0.0)
+                                       DECAL_LIFT if row.get("decal") else 0.0,
+                                       smooth_normals=(coarsening > 0.0))
                 for o in bpy.data.objects:
                     o.select_set(False)
                 empty.select_set(True)
@@ -1015,7 +1100,7 @@ def main():
                             "lod_out": row.get("lod_out", 0.0),
                             "blend": row.get("needs_blend", False),
                             "radius": row.get("radius", 0.0),
-                            "tris": row["tris"],
+                            "tris": len(geom[2]) if coarsening > 0.0 else row["tris"],
                         })
                         if shards > 1:
                             # Where this belongs in a single run's list;
@@ -1109,6 +1194,11 @@ def main():
 
     with open(os.path.join(out_dir, "exported.json"), "w") as f:
         json.dump(exported, f, indent=1)
+    if coarsening > 0.0 and coarsen_meshes:
+        pct = 100.0 * (coarsen_before - coarsen_after) / max(1, coarsen_before)
+        tag = " shard %d/%d" % (shard + 1, shards) if shards > 1 else ""
+        print("coarsened%s (%.2f): %d meshes, %d -> %d tris (-%.1f%%)"
+              % (tag, coarsening, coarsen_meshes, coarsen_before, coarsen_after, pct))
     print("EXPORTED %d of %d" % (len(exported), count))
 
 

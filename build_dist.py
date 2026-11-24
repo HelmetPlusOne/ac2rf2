@@ -31,7 +31,7 @@ import steam_paths
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADDON_NAME = "io_rf2_gmt_release"
-BLENDER_SCRIPTS = ("blender_stage.py", "kn5.py", "backdrop.py")
+BLENDER_SCRIPTS = ("blender_stage.py", "kn5.py", "backdrop.py", "mesh_coarsen.py")
 HIDDEN_IMPORTS = (
     "backdrop",
     "bake_layers",
@@ -45,6 +45,7 @@ HIDDEN_IMPORTS = (
     "kn5",
     "make_aiw",
     "make_cam",
+    "mesh_coarsen",
     "numpy",
     "package_rfcmp",
     "parallel",

@@ -479,6 +479,8 @@ def main():
                     help="rF2 ModDev Locations folder to copy into")
     ap.add_argument("--road-smoothness", type=float, default=None,
                     help="road surface smoothing in [0.0, 1.0] mapped to sigma in [0m, 8m] (0 disables, 0.5 -> 4m moderate, 1.0 -> 8m max; default from ac2rf2.ini)")
+    ap.add_argument("--mesh-coarsening", type=float, default=None,
+                    help="mesh coarsening in [0.0, 1.0] (controls rF2 vertex normal dedup tolerance; default from ac2rf2.ini)")
     ap.add_argument("--preview",
                     help="AC track map or UI preview image for menu/loading screens")
     ap.add_argument("--texconv", default="texconv.exe",
@@ -496,6 +498,12 @@ def main():
         eff_road_smooth_sigma = steam_paths.road_smoothness_to_sigma(args.road_smoothness)
     except ValueError as exc:
         raise SystemExit("--road-smoothness: %s" % exc)
+    if args.mesh_coarsening is None:
+        args.mesh_coarsening = _cfg["mesh_coarsening"]
+    try:
+        args.mesh_coarsening = steam_paths.validate_mesh_coarsening(args.mesh_coarsening)
+    except ValueError as exc:
+        raise SystemExit("--mesh-coarsening: %s" % exc)
 
     out_dir = os.path.abspath(args.out_dir)
     venue = os.path.basename(out_dir)
@@ -630,7 +638,8 @@ def main():
         if args.minimal and f.lower() not in wanted:
             continue
         ov, nv, ob, nb = gmt_dedup.dedup_file(
-            os.path.join(gmt_dir, f), os.path.join(gmts, f))
+            os.path.join(gmt_dir, f), os.path.join(gmts, f),
+            mesh_coarsening=args.mesh_coarsening)
         old_verts += ov
         new_verts += nv
         old_bytes += ob

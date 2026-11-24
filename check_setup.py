@@ -133,7 +133,7 @@ def check_blender(rep, blender):
 
 def check(track_dir=None, layout=None, blender=None, install=None,
           need_blender=True, texture_scale=None, texture_scale_min_size=None,
-          road_smoothness=None):
+          road_smoothness=None, mesh_coarsening=None):
     """Print one line per check; True when nothing is missing."""
     import steam_paths
     rep = Report()
@@ -158,6 +158,7 @@ def check(track_dir=None, layout=None, blender=None, install=None,
             _fmt("texture_scale", texture_scale),
             _fmt("texture_scale_min_size", texture_scale_min_size),
             _fmt("road_smoothness", road_smoothness),
+            _fmt("mesh_coarsening", mesh_coarsening),
         ))
         if cfg["exists"]:
             rep.ok("config         %s (%s)" % (cfg["path"], summary))

@@ -25,6 +25,28 @@ FACE_SIZE = 32
 NORMAL_SIZE = 16
 RF2_VERTEX_SIZE = 96
 
+DEFAULT_NORMAL_QUANT = 500.0
+MAX_COARSEN_NORMAL_DEG = 8.0
+
+
+def normal_dedup_quant(mesh_coarsening=0.0):
+    """Map mesh_coarsening in [0.0, 1.0] to the vertex normal dedup scale K.
+
+    At 0.0 (disabled), returns DEFAULT_NORMAL_QUANT (500.0 ~= 0.11 deg) for
+    exact legacy deduplication. For mesh_coarsening > 0.0, loosens smoothly up
+    to MAX_COARSEN_NORMAL_DEG (8.0 deg, K ~= 7.16) at 1.0 so smooth surfaces
+    deduplicate cleanly while sharp creases (> ~8 deg) stay split.
+    """
+    c = float(mesh_coarsening)
+    if not math.isfinite(c) or not (0.0 <= c <= 1.0):
+        raise ValueError(
+            "mesh_coarsening must be between 0.0 and 1.0, got %r"
+            % (mesh_coarsening,)
+        )
+    if c == 0.0:
+        return DEFAULT_NORMAL_QUANT
+    return min(DEFAULT_NORMAL_QUANT, 1.0 / math.radians(MAX_COARSEN_NORMAL_DEG * c))
+
 
 def is_rf2_gmt(data):
     """Return True when raw GMT bytes carry the GMOTOR_GMT_2.52 magic."""
@@ -32,12 +54,14 @@ def is_rf2_gmt(data):
             and data[RF2_MAGIC_OFFSET:RF2_MAGIC_OFFSET + len(RF2_GMT_MAGIC)] == RF2_GMT_MAGIC)
 
 
-def _dedup_mesh_vertices(data, vert_offset_bytes, vert_count):
+def _dedup_mesh_vertices(data, vert_offset_bytes, vert_count,
+                         normal_quant=DEFAULT_NORMAL_QUANT):
     """Deduplicate 96-byte rF2 TVertex2 records in first-appearance order.
 
     Returns (new_verts_bytes, new_vcount, remap) where remap[old_idx] == new_idx.
     """
     span = vert_count * RF2_VERTEX_SIZE
+    q_scale = float(normal_quant)
     if vert_count <= 1:
         remap = (_np.arange(vert_count, dtype=_np.uint16)
                  if _np is not None else list(range(vert_count)))
@@ -59,7 +83,7 @@ def _dedup_mesh_vertices(data, vert_offset_bytes, vert_count):
             _np.where(_np.isfinite(vf[:, 3:6]), vf[:, 3:6], 0.0).astype(_np.float64),
             -1.0, 1.0,
         )
-        nrm = _np.rint(nf64 * 500.0).astype("<i2")
+        nrm = _np.rint(nf64 * q_scale).astype("<i2")
         extra = vu[:, 6:10]  # dcolor, scolor, + 8 bytes before tangent
         tf64 = _np.where(_np.isfinite(vf[:, 10:16]), vf[:, 10:16], 0.0).astype(_np.float64)
         cx = nf64[:, 1] * tf64[:, 2] - nf64[:, 2] * tf64[:, 1]
@@ -101,7 +125,7 @@ def _dedup_mesh_vertices(data, vert_offset_bytes, vert_count):
             v = 1.0
         elif v < -1.0:
             v = -1.0
-        return int(round(v * 500.0))
+        return int(round(v * q_scale))
 
     seen = {}
     keep = []
@@ -187,7 +211,7 @@ def _remap_face_vertices(data, foff, nface, global_remap, old_total_vcount):
     return bytes(out)
 
 
-def dedup_rf2_gmt(data, label="GMT"):
+def dedup_rf2_gmt(data, label="GMT", mesh_coarsening=0.0):
     """Deduplicate vertices inside raw rF2 GMT v2.52 bytes.
 
     Returns (new_bytes, old_vcount, new_vcount). Non-v2.52, rigged (bcnt != 0),
@@ -195,6 +219,8 @@ def dedup_rf2_gmt(data, label="GMT"):
     """
     if not is_rf2_gmt(data) or len(data) < RF2_HEADER_SIZE:
         return data, 0, 0
+
+    n_quant = normal_dedup_quant(mesh_coarsening)
 
     mat_off_rel = struct.unpack_from("<I", data, 0)[0]
     mat_off = mat_off_rel + 4
@@ -240,7 +266,7 @@ def dedup_rf2_gmt(data, label="GMT"):
         if m_vstart + m_vcount > vcount or m_tstart + m_tcount > tcount:
             return data, vcount, vcount
         vbytes, new_vc, remap = _dedup_mesh_vertices(
-            data, voff + m_vstart * RF2_VERTEX_SIZE, m_vcount)
+            data, voff + m_vstart * RF2_VERTEX_SIZE, m_vcount, normal_quant=n_quant)
         tbytes = _remap_triangles(data, toff + m_tstart * 2, m_tcount, remap, m_vcount)
         if m_vcount:
             if _np is not None:
@@ -297,7 +323,7 @@ def dedup_rf2_gmt(data, label="GMT"):
     return bytes(out), vcount, new_vcount
 
 
-def dedup_file(src, dst=None):
+def dedup_file(src, dst=None, mesh_coarsening=0.0):
     """Deduplicate an rF2 GMT file from src to dst (in-place if dst is None).
 
     Returns (old_verts, new_verts, old_bytes, new_bytes).
@@ -306,7 +332,8 @@ def dedup_file(src, dst=None):
         dst = src
     with open(src, "rb") as f:
         original = f.read()
-    deduped, old_v, new_v = dedup_rf2_gmt(original, label=src)
+    deduped, old_v, new_v = dedup_rf2_gmt(
+        original, label=src, mesh_coarsening=mesh_coarsening)
     if dst != src or deduped is not original:
         with open(dst, "wb") as f:
             f.write(deduped)

@@ -341,6 +341,128 @@ class Kn5Tests(unittest.TestCase):
             self.assertEqual(cfg["texture_scale_min_size"], 512)
             self.assertEqual(cfg["road_smoothness"], 0.25)
             self.assertEqual(cfg["road_smooth_sigma"], 2.0)
+            self.assertEqual(cfg["mesh_coarsening"], 0.0)
+
+            # Custom INI with mesh_coarsening
+            with open(ini_path, "w", encoding="utf-8") as f:
+                f.write("[track]\nmesh_coarsening = 0.5\n")
+            cfg = steam_paths.load_config(root)
+            self.assertEqual(cfg["mesh_coarsening"], 0.5)
+            self.assertEqual(cfg["mesh_coarsening_source"], "ini")
+
+    def test_mesh_coarsening_role_classification_and_monotonic_ratios(self):
+        import mesh_coarsen
+
+        # Skipped roles: tiny meshes, backdrops, timing, non-rendered non-physical.
+        self.assertIsNone(mesh_coarsen.classify_mesh_role(
+            {"render": True, "physical": False, "tris": 32}))
+        self.assertIsNone(mesh_coarsen.classify_mesh_role(
+            {"render": True, "physical": False, "backdrop": True, "tris": 500}))
+        self.assertIsNone(mesh_coarsen.classify_mesh_role(
+            {"render": False, "physical": True, "timing": True, "tris": 500}))
+        self.assertIsNone(mesh_coarsen.classify_mesh_role(
+            {"render": False, "physical": False, "tris": 500}))
+
+        # Active roles.
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": False, "physical": True, "surface": "ROAD", "tris": 500}),
+            "road_physical",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": True, "physical": True, "surface": "GRASS", "tris": 500}),
+            "road_physical",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": False, "physical": True, "surface": "WALL", "tris": 500}),
+            "collision_offtrack",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": True, "physical": False, "decal": True, "tris": 500}),
+            "road_physical",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": True, "physical": False, "track_surface": True, "tris": 500}),
+            "track_visual",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": True, "physical": False, "track_surface": False, "tris": 500}),
+            "scenery",
+        )
+
+        # Disabled at 0.0; strictly decreasing (stronger coarsening) as c -> 1.0.
+        for role, expected_min in mesh_coarsen.ROLE_MIN_RATIO.items():
+            self.assertEqual(mesh_coarsen.coarsen_ratio(0.0, role), 1.0)
+            r25 = mesh_coarsen.coarsen_ratio(0.25, role)
+            r50 = mesh_coarsen.coarsen_ratio(0.50, role)
+            r75 = mesh_coarsen.coarsen_ratio(0.75, role)
+            r100 = mesh_coarsen.coarsen_ratio(1.0, role)
+            self.assertTrue(1.0 > r25 > r50 > r75 > r100 == expected_min)
+
+        # Invalid coarsening values raise ValueError.
+        for bad in (-0.1, 1.1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                mesh_coarsen.coarsen_ratio(bad, "scenery")
+
+        # Early no-op guard returns input unchanged without needing Blender.
+        v = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        u = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]
+        f = [(0, 1, 2)]
+        n = [(0.0, 0.0, 1.0)] * 3
+        self.assertEqual(mesh_coarsen.coarsen_geometry(v, u, f, n, 1.0), (v, u, f, n))
+        self.assertEqual(mesh_coarsen.coarsen_geometry(v, u, f, n, 0.5), (v, u, f, n))
+
+    def test_normal_dedup_scales_with_mesh_coarsening_and_preserves_creases(self):
+        import gmt_dedup
+        import math
+        from unittest import mock
+
+        # 0.0 preserves legacy 500.0 quantization; higher coarsening loosens monotonically.
+        self.assertEqual(gmt_dedup.normal_dedup_quant(0.0), gmt_dedup.DEFAULT_NORMAL_QUANT)
+        q25 = gmt_dedup.normal_dedup_quant(0.25)
+        q50 = gmt_dedup.normal_dedup_quant(0.50)
+        q75 = gmt_dedup.normal_dedup_quant(0.75)
+        q100 = gmt_dedup.normal_dedup_quant(1.0)
+        self.assertTrue(gmt_dedup.DEFAULT_NORMAL_QUANT > q25 > q50 > q75 > q100 > 6.0)
+        for bad in (-0.1, 1.1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                gmt_dedup.normal_dedup_quant(bad)
+
+        # Build 3 96-byte rF2 TVertex2 records:
+        #   v0: normal (0, 1, 0)
+        #   v1: normal tilted ~2.5 deg (sin=0.0436, cos=0.9990) -> smooth jitter
+        #   v2: normal tilted 90 deg (1, 0, 0) -> hard architectural crease
+        a = math.radians(2.5)
+        tan = (1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        uvs = (0.25, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        v0 = struct.pack("<6f4I6f8f", 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 0xFFFFFFFF, 0, 0, 0, *tan, *uvs)
+        v1 = struct.pack("<6f4I6f8f", 1.0, 2.0, 3.0, math.sin(a), math.cos(a), 0.0, 0xFFFFFFFF, 0, 0, 0, *tan, *uvs)
+        v2 = struct.pack("<6f4I6f8f", 1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0xFFFFFFFF, 0, 0, 0, *tan, *uvs)
+        raw_verts = v0 + v1 + v2
+
+        # At coarsening=0.0 (K=500): all 3 remain separate.
+        q0 = gmt_dedup.normal_dedup_quant(0.0)
+        _, vc0, _ = gmt_dedup._dedup_mesh_vertices(raw_verts, 0, 3, normal_quant=q0)
+        self.assertEqual(vc0, 3)
+
+        # At coarsening=1.0 (K~=7.16, ~8 deg): v0 and v1 merge, 90 deg crease v2 stays split!
+        new_vb, vc_fast, remap_fast = gmt_dedup._dedup_mesh_vertices(
+            raw_verts, 0, 3, normal_quant=q100)
+        self.assertEqual(vc_fast, 2)
+        self.assertEqual(int(remap_fast[0]), int(remap_fast[1]))
+        self.assertNotEqual(int(remap_fast[0]), int(remap_fast[2]))
+
+        # NumPy and pure-Python paths must stay byte-for-byte identical.
+        with mock.patch.object(gmt_dedup, "_np", None):
+            new_vb_py, vc_py, remap_py = gmt_dedup._dedup_mesh_vertices(
+                raw_verts, 0, 3, normal_quant=q100)
+        self.assertEqual((new_vb, vc_fast, list(remap_fast)),
+                         (new_vb_py, vc_py, list(remap_py)))
 
     def test_cli_dispatches_build_track_and_convert_multiple_tracks(self):
         import ac2rf2

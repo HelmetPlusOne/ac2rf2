@@ -22,6 +22,17 @@ INI_NAME = "ac2rf2.ini"
 DEFAULT_TEXTURE_SCALE = 1.0
 DEFAULT_TEXTURE_SCALE_MIN_SIZE = 1024
 DEFAULT_ROAD_SMOOTHNESS = 0.0
+DEFAULT_MESH_COARSENING = 0.0
+
+
+def validate_mesh_coarsening(coarsening):
+    """Validate normalized mesh_coarsening in [0.0, 1.0] and return float."""
+    value = float(coarsening)
+    if not math.isfinite(value) or not (0.0 <= value <= 1.0):
+        raise ValueError(
+            "mesh_coarsening must be between 0.0 and 1.0, got %r" % (coarsening,)
+        )
+    return value
 
 
 def road_smoothness_to_sigma(smoothness):
@@ -153,6 +164,8 @@ def load_config(base_dir=None):
         "road_smoothness": DEFAULT_ROAD_SMOOTHNESS,
         "road_smoothness_source": "default",
         "road_smooth_sigma": road_smoothness_to_sigma(DEFAULT_ROAD_SMOOTHNESS),
+        "mesh_coarsening": DEFAULT_MESH_COARSENING,
+        "mesh_coarsening_source": "default",
     }
     if not os.path.isfile(ini_path):
         return result
@@ -209,6 +222,21 @@ def load_config(base_dir=None):
         result["road_smoothness"] = smoothness
         result["road_smoothness_source"] = "ini"
         result["road_smooth_sigma"] = road_smoothness_to_sigma(smoothness)
+    if parser.has_option("track", "mesh_coarsening"):
+        raw = parser.get("track", "mesh_coarsening").strip()
+        try:
+            coarsening = float(raw)
+        except ValueError as exc:
+            raise ValueError(
+                "[track] mesh_coarsening must be a number, got %r" % (raw,)
+            ) from exc
+        if not math.isfinite(coarsening) or not (0.0 <= coarsening <= 1.0):
+            raise ValueError(
+                "[track] mesh_coarsening must be between 0.0 and 1.0, got %r"
+                % (coarsening,)
+            )
+        result["mesh_coarsening"] = coarsening
+        result["mesh_coarsening_source"] = "ini"
     return result
 
 
