@@ -1173,7 +1173,7 @@ def main():
     ap.add_argument("--layout", default=None,
                     help="for a multi-layout track: the part after models_ in models_<layout>.ini")
     ap.add_argument("--tdf-template",
-                    default=os.path.join(steam_paths.LOCATIONS, "terrain.tdf"),
+                    default=steam_paths.TERRAIN_TDF,
                     help="known-good terrain file to patch grip values into")
     args = ap.parse_args()
 

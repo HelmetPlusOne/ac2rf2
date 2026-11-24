@@ -324,6 +324,7 @@ BLENDER_STAGE = (
     else os.path.join(APP_DIR, "blender_stage.py")
 )
 LOCATIONS = os.path.join(RF2_DIR, "ModDev", "Locations")
+TERRAIN_TDF = os.path.join(LOCATIONS, "terrain.tdf")
 INSTALL_LOCATIONS = LOCATIONS
 WORK_ROOT = os.path.join(APP_DIR, "work") if IS_STANDALONE else os.path.join(APP_DIR, "out")
 

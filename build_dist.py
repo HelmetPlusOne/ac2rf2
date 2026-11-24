@@ -9,7 +9,6 @@ Recreates ``dist/`` from scratch with:
     pre-installed inside ``3.6/scripts/addons/``)
   - ``tools/blender_scripts/`` (``blender_stage.py``, ``kn5.py``, ``backdrop.py``)
   - ``data/ac/system/data/surfaces.ini``
-  - ``data/rf2/ModDev/Locations/terrain.tdf``
   - ``out/`` (destination for converted track .rfcmp component files, with ``readme.txt``)
   - ``work/`` (intermediate build workspace, with ``readme.txt``)
 
@@ -187,15 +186,11 @@ def main(argv=None):
     rf2_dir = os.path.abspath(args.rf2 or steam_paths.RF2_DIR)
 
     surfaces_src = os.path.join(ac_dir, "system", "data", "surfaces.ini")
-    terrain_src = os.path.join(steam_paths.LOCATIONS, "terrain.tdf")
-    if not os.path.isfile(terrain_src):
-        terrain_src = os.path.join(rf2_dir, "ModDev", "Locations", "terrain.tdf")
 
     for label, path, check in (
         ("Blender", os.path.join(blender_src, "blender.exe"), os.path.isfile),
         ("Blender addon", addon_src, os.path.isdir),
         ("AC surfaces.ini", surfaces_src, os.path.isfile),
-        ("rF2 terrain.tdf", terrain_src, os.path.isfile),
     ):
         if not check(path):
             raise SystemExit("Required source missing (%s): %s" % (label, path))
@@ -221,13 +216,10 @@ def main(argv=None):
     for script in BLENDER_SCRIPTS:
         shutil.copy2(os.path.join(HERE, script), os.path.join(scripts_dst, script))
 
-    # 3. Copy standalone template data from AC and rF2.
+    # 3. Copy standalone template data from AC.
     ac_data_dst = os.path.join(dist_dir, "data", "ac", "system", "data")
-    rf2_loc_dst = os.path.join(dist_dir, "data", "rf2", "ModDev", "Locations")
     os.makedirs(ac_data_dst, exist_ok=True)
-    os.makedirs(rf2_loc_dst, exist_ok=True)
     shutil.copy2(surfaces_src, os.path.join(ac_data_dst, "surfaces.ini"))
-    shutil.copy2(terrain_src, os.path.join(rf2_loc_dst, "terrain.tdf"))
 
     # 6. Copy standalone README.md, ac2rf2.ini, and create out/ and work/ folders with readme.txt.
     dist_readme = os.path.join(HERE, "DIST_README.md")

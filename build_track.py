@@ -319,6 +319,7 @@ def main():
         os.environ["AC2RF2_RF2_DIR"] = rf2_resolved
         steam_paths.RF2_DIR = rf2_resolved
         steam_paths.LOCATIONS = os.path.join(rf2_resolved, "ModDev", "Locations")
+        steam_paths.TERRAIN_TDF = os.path.join(steam_paths.LOCATIONS, "terrain.tdf")
         steam_paths.INSTALL_LOCATIONS = steam_paths.LOCATIONS
         steam_paths.TEXCONV = steam_paths.find_texconv(rf2_resolved)
     if args.ac:

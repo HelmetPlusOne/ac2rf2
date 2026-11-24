@@ -82,10 +82,11 @@ scanning the entire disk by checking:
 4. Interactive console prompt to enter or paste the path if not found (saved to `ac2rf2.ini`).
 5. Optional manual configuration in `ac2rf2.ini` (`[paths] rf2 = ...`).
 
-All required utilities are run directly from your rFactor 2 installation:
+All required utilities and resources are run directly from your rFactor 2 installation:
 - `Support\Tools\MapConverter\texconv.exe` (texture conversion)
 - `Support\Tools\MAS2.exe` (RFCMP packaging)
 - `Bin64\ModMgr.exe` (MAS archive compilation)
+- `ModDev\Locations\terrain.tdf` (terrain physics template)
 
 ## Bundled Tools and Third-Party Licenses
 
