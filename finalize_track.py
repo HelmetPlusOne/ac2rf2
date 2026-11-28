@@ -14,6 +14,7 @@ The scene file is rebuilt from the gmt files that were actually exported rather
 than from the pre-export plan.
 """
 import os
+import re
 import json
 import shutil
 import struct
@@ -23,6 +24,33 @@ import tempfile
 import subprocess
 
 MAX_INSTANCE_NAME_LENGTH = 31
+BARRIER_MAT_PREFIXES = ("wall_", "twal_", "twall_", "grdr_", "safer_", "cwal_", "cmwl_", "cema_")
+BARRIER_SURFACE_KEYS = ("WALL", "TYREWALL", "GUARDRAIL", "SAFER")
+
+
+def _surface_stem(row):
+    meta = row.get("_meta") or {}
+    surf = (meta.get("surface") or "").strip().upper()
+    if surf:
+        return re.sub(r"[^A-Z].*$", "", surf)
+    raw = os.path.splitext(row.get("mesh") or row.get("gmt") or "")[0]
+    return raw.lstrip("0123456789").upper()
+
+
+def is_barrier_row(row):
+    """Return True for vertical collision barriers (walls/guardrails/tyrewalls).
+
+    Barriers stay CollTarget=True for vehicle impacts, but must be HATTarget=False
+    so they never register as fake drivable ground or bloat the HAT structure.
+    """
+    if not row.get("physical") or row.get("timing"):
+        return False
+    meta = row.get("_meta") or {}
+    rf2_mat = (meta.get("rf2_material") or "").lower()
+    if rf2_mat.startswith(BARRIER_MAT_PREFIXES):
+        return True
+    stem = _surface_stem(row)
+    return any(stem.startswith(k) for k in BARRIER_SURFACE_KEYS)
 
 
 def instance_identifier(name, used=None):
@@ -534,6 +562,9 @@ def main():
                 # geometry stage happened to record an hour earlier.
                 row["lod_in"] = cur.get("lod_in", 0.0)
                 row["lod_out"] = cur.get("lod_out", 0.0)
+                row["_meta"] = cur
+            else:
+                row["_meta"] = None
 
     stage = os.path.join(out_dir, "rf2", venue)
     if os.path.isdir(stage):
@@ -584,9 +615,9 @@ def main():
         coll = "True" if row["physical"] else "False"
         if row["physical"]:
             phys += 1
-        # Timing strips collide but must not act as ground, or the car sits on
-        # them instead of the road.
-        hat = "False" if row.get("timing") else coll
+        # Timing strips and vertical collision barriers collide with vehicles
+        # but must not act as ground (HAT), or cars can snap on top of them.
+        hat = "False" if (row.get("timing") or is_barrier_row(row)) else coll
         # Timing gates and collision-only shells must never be rendered. Check
         # timing first because blender_stage records timing rows without a
         # "render" key (so row.get("render", True) is True).

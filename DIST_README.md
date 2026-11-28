@@ -4,6 +4,12 @@ Windows converter for converting Assetto Corsa tracks into rFactor 2 locations a
 
 Converted tracks are automatically packaged into MAS archives and an `.rfcmp` component file placed in the `out\` folder next to `ac2rf2.exe`. Copy this file to `Steam\steamapps\common\rFactor 2\Packages`. You can install the `.rfcmp` in-game using the **Content & Settings -> Manage Content** menu.
 
+## Changelog
+
+### TBD
+
+- **Disable HAT on vertical collision barriers**: Sets `HATTarget=False` (keeping `CollTarget=True`) on vertical barriers (`1WALL*`, guardrails, tyrewalls) in `.scn` files so walls never act as fake drivable ground or bloat rF2's HAT structure.
+
 ## Usage
 
 ### 1. Drag and Drop (Windows Explorer)

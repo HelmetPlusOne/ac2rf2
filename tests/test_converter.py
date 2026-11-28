@@ -965,6 +965,23 @@ class Kn5Tests(unittest.TestCase):
             for p in res_rec:
                 self.assertLess(os.path.getsize(p), 350)
 
+    def test_is_barrier_row_disables_hat_on_walls_only(self):
+        import finalize_track
+
+        wall_by_mat = {"physical": True, "mesh": "1BARRIER_01", "_meta": {"rf2_material": "wall_concrete"}}
+        wall_by_name = {"physical": True, "mesh": "1WALL_rocks", "_meta": {"rf2_material": "null_mtl"}}
+        guardrail = {"physical": True, "mesh": "2GUARDRAIL_01", "_meta": {"surface": "GUARDRAIL"}}
+        road = {"physical": True, "mesh": "1ROAD_main", "_meta": {"rf2_material": "road_asphalt", "surface": "ROAD"}}
+        grass = {"physical": True, "mesh": "1GRASS_01", "_meta": {"rf2_material": "gras_01", "surface": "GRASS"}}
+        visual_wall = {"physical": False, "mesh": "wall_vis", "_meta": {"rf2_material": "wall_concrete"}}
+
+        self.assertTrue(finalize_track.is_barrier_row(wall_by_mat))
+        self.assertTrue(finalize_track.is_barrier_row(wall_by_name))
+        self.assertTrue(finalize_track.is_barrier_row(guardrail))
+        self.assertFalse(finalize_track.is_barrier_row(road))
+        self.assertFalse(finalize_track.is_barrier_row(grass))
+        self.assertFalse(finalize_track.is_barrier_row(visual_wall))
+
 
 if __name__ == "__main__":
     unittest.main()
