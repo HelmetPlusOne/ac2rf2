@@ -19,7 +19,6 @@ import string
 import configparser
 
 STEAM_DEFAULT = r"C:\Program Files (x86)\Steam"
-DEFAULT_BLENDER = r"D:\Apps\Blender\blender.exe"
 INI_NAME = "ac2rf2.ini"
 DEFAULT_TEXTURE_SCALE = 1.0
 DEFAULT_TEXTURE_SCALE_MIN_SIZE = 1024
@@ -359,31 +358,79 @@ def find_texconv(rf2_dir=None):
     return os.path.join(rf2, "Support", "Tools", "MapConverter", "texconv.exe")
 
 
-APP_DIR = app_dir()
-BUNDLED_BLENDER = os.path.join(APP_DIR, "blender", "blender.exe")
-BUNDLED_BLENDER_STAGE = os.path.join(APP_DIR, "blender", "blender_scripts", "blender_stage.py")
+def _has_dist_layout(root):
+    """Return True when ``root`` itself is a standalone dist directory."""
+    return (
+        os.path.isfile(os.path.join(root, "blender", "blender.exe"))
+        and os.path.isfile(os.path.join(root, "blender", "blender_scripts", "blender_stage.py"))
+    )
 
-IS_STANDALONE = bool(
-    getattr(sys, "frozen", False)
-    or (os.path.isfile(BUNDLED_BLENDER) and os.path.isfile(BUNDLED_BLENDER_STAGE))
-)
+
+def dist_ready(tools_root=None):
+    """Return True when the dist ``blender/`` bundle exists."""
+    root = TOOLS_ROOT if tools_root is None else tools_root
+    return _has_dist_layout(root)
+
+
+def resolve_paths(app_root=None, frozen=None, env=None):
+    """Resolve app, dist, Blender, and workspace paths without hardcoded local paths.
+
+    - Running from ``dist`` (frozen EXE or directly inside a ``dist`` folder):
+      always uses dist-local Blender and scripts under ``app_root``.
+    - Running from Python directly: resolves Blender from ``<app_root>/dist/blender/``
+      (honoring an explicit ``AC2RF2_BLENDER`` override when set).
+    """
+    is_frozen = getattr(sys, "frozen", False) if frozen is None else bool(frozen)
+    root = os.path.abspath(app_root) if app_root is not None else app_dir()
+    environ = os.environ if env is None else env
+
+    is_standalone = bool(is_frozen or _has_dist_layout(root))
+    dist_dir = root if is_standalone else os.path.join(root, "dist")
+    tools_root = dist_dir
+
+    bundled_blender = os.path.join(tools_root, "blender", "blender.exe")
+    bundled_blender_stage = os.path.join(tools_root, "blender", "blender_scripts", "blender_stage.py")
+
+    if is_standalone:
+        blender = bundled_blender
+        blender_stage = bundled_blender_stage
+        work_root = os.path.join(root, "work")
+    else:
+        blender = environ.get("AC2RF2_BLENDER") or bundled_blender
+        local_stage = os.path.join(root, "blender_stage.py")
+        blender_stage = local_stage if os.path.isfile(local_stage) else bundled_blender_stage
+        work_root = os.path.join(root, "out")
+
+    return {
+        "APP_DIR": root,
+        "DIST_DIR": dist_dir,
+        "TOOLS_ROOT": tools_root,
+        "IS_STANDALONE": is_standalone,
+        "BUNDLED_BLENDER": bundled_blender,
+        "BUNDLED_BLENDER_STAGE": bundled_blender_stage,
+        "BLENDER": blender,
+        "BLENDER_STAGE": blender_stage,
+        "WORK_ROOT": work_root,
+    }
+
+
+_RESOLVED = resolve_paths()
+APP_DIR = _RESOLVED["APP_DIR"]
+DIST_DIR = _RESOLVED["DIST_DIR"]
+TOOLS_ROOT = _RESOLVED["TOOLS_ROOT"]
+IS_STANDALONE = _RESOLVED["IS_STANDALONE"]
+BUNDLED_BLENDER = _RESOLVED["BUNDLED_BLENDER"]
+BUNDLED_BLENDER_STAGE = _RESOLVED["BUNDLED_BLENDER_STAGE"]
+BLENDER = _RESOLVED["BLENDER"]
+BLENDER_STAGE = _RESOLVED["BLENDER_STAGE"]
+WORK_ROOT = _RESOLVED["WORK_ROOT"]
 
 AC_DIR = os.environ.get("AC2RF2_AC_DIR") or game_dir("assettocorsa")
 RF2_DIR = find_rf2_dir(prompt=True)
 TEXCONV = find_texconv(RF2_DIR)
-BLENDER = (
-    os.environ.get("AC2RF2_BLENDER")
-    or (BUNDLED_BLENDER if os.path.isfile(BUNDLED_BLENDER) else DEFAULT_BLENDER)
-)
-BLENDER_STAGE = (
-    BUNDLED_BLENDER_STAGE
-    if os.path.isfile(BUNDLED_BLENDER_STAGE)
-    else os.path.join(APP_DIR, "blender_stage.py")
-)
 LOCATIONS = os.path.join(RF2_DIR, "ModDev", "Locations")
 TERRAIN_TDF = os.path.join(LOCATIONS, "terrain.tdf")
 INSTALL_LOCATIONS = LOCATIONS
-WORK_ROOT = os.path.join(APP_DIR, "work") if IS_STANDALONE else os.path.join(APP_DIR, "out")
 
 
 def ensure_default_surfaces_ini(work_dir=None):

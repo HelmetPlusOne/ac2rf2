@@ -8,6 +8,7 @@ Converted tracks are automatically packaged into MAS archives and an `.rfcmp` co
 
 ### TBD
 
+- **Portable dist-local Blender paths**: Removed hardcoded local Blender paths (`D:\Apps\Blender\blender.exe`), made `dist` builds always resolve bundled Blender locally (with direct Python runs resolving Blender from `<script_path>/dist/blender/`), and updated `build_dist.py` to discover Blender via `--blender`, `AC2RF2_BLENDER`, `PATH`, Program Files, or an existing `dist/`.
 - **Disable HAT on vertical collision barriers**: Sets `HATTarget=False` (keeping `CollTarget=True`) on vertical barriers (`1WALL*`, guardrails, tyrewalls) in `.scn` files so walls never act as fake drivable ground or bloat rF2's HAT structure.
 
 ## Usage

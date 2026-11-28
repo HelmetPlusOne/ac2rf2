@@ -982,6 +982,49 @@ class Kn5Tests(unittest.TestCase):
         self.assertFalse(finalize_track.is_barrier_row(grass))
         self.assertFalse(finalize_track.is_barrier_row(visual_wall))
 
+    def test_resolve_paths_uses_dist_blender_without_hardcoded_paths(self):
+        import build_dist
+        import steam_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = os.path.join(tmp, "repo")
+            dist_root = os.path.join(repo_root, "dist")
+            blender_dir = os.path.join(dist_root, "blender")
+            scripts_dir = os.path.join(blender_dir, "blender_scripts")
+            os.makedirs(scripts_dir)
+            with open(os.path.join(blender_dir, "blender.exe"), "wb") as f:
+                f.write(b"MZ")
+            with open(os.path.join(scripts_dir, "blender_stage.py"), "w", encoding="utf-8") as f:
+                f.write("# stage\n")
+
+            # 1. Direct Python run resolves Blender from <repo>/dist/blender/
+            py_res = steam_paths.resolve_paths(app_root=repo_root, frozen=False, env={})
+            self.assertFalse(py_res["IS_STANDALONE"])
+            self.assertEqual(py_res["BLENDER"], os.path.join(dist_root, "blender", "blender.exe"))
+            self.assertEqual(py_res["WORK_ROOT"], os.path.join(repo_root, "out"))
+            self.assertTrue(steam_paths.dist_ready(py_res["TOOLS_ROOT"]))
+
+            # 2. Explicit AC2RF2_BLENDER overrides Blender during direct Python runs
+            py_override = steam_paths.resolve_paths(
+                app_root=repo_root, frozen=False, env={"AC2RF2_BLENDER": r"C:\Custom\blender.exe"}
+            )
+            self.assertEqual(py_override["BLENDER"], r"C:\Custom\blender.exe")
+
+            # 3. Standalone (dist) run always uses dist-local Blender, ignoring env overrides
+            dist_res = steam_paths.resolve_paths(
+                app_root=dist_root, frozen=True, env={"AC2RF2_BLENDER": r"C:\Ignored\blender.exe"}
+            )
+            self.assertTrue(dist_res["IS_STANDALONE"])
+            self.assertEqual(dist_res["BLENDER"], os.path.join(dist_root, "blender", "blender.exe"))
+            self.assertEqual(dist_res["BLENDER_STAGE"], os.path.join(scripts_dir, "blender_stage.py"))
+            self.assertEqual(dist_res["WORK_ROOT"], os.path.join(dist_root, "work"))
+
+            # 4. build_dist.find_blender_dir falls back to existing dist/blender when building elsewhere
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                    mock.patch.object(build_dist.shutil, "which", return_value=None):
+                found = build_dist.find_blender_dir(None, fallback_dist=dist_root)
+            self.assertEqual(os.path.abspath(found), os.path.abspath(blender_dir))
+
 
 if __name__ == "__main__":
     unittest.main()

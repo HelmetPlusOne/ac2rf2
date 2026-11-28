@@ -26,11 +26,6 @@ HERE = (
     if getattr(sys, "frozen", False)
     else os.path.dirname(os.path.abspath(__file__))
 )
-BLENDER = (
-    os.path.join(HERE, "blender", "blender.exe")
-    if os.path.isfile(os.path.join(HERE, "blender", "blender.exe"))
-    else r"D:\Apps\Blender\blender.exe"
-)
 
 
 def stage_cmd(script_name, *stage_args):
@@ -256,7 +251,8 @@ def main():
     ap.add_argument("--diffuse", default="0.42")
     ap.add_argument("--ambient", default="0.30")
     ap.add_argument("--scene-ambient", default="126")
-    ap.add_argument("--blender", default=BLENDER)
+    ap.add_argument("--blender", default=None,
+                    help="path to blender.exe (defaults to bundled dist/blender/blender.exe)")
     ap.add_argument("--layout", default=None,
                     help="for a multi-layout track: the part after models_ in models_<layout>.ini")
     ap.add_argument("--skip-geometry", action="store_true",

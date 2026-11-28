@@ -69,13 +69,37 @@ WORK_README = (
 )
 
 
-def find_blender_dir(explicit):
+def _program_files_dirs():
+    out = []
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        val = os.environ.get(var)
+        if val and os.path.isdir(val):
+            out.append(val)
+    return out
+
+
+def find_blender_dir(explicit, fallback_dist=None):
+    candidates = []
     if explicit:
         path = os.path.abspath(explicit)
         if os.path.isfile(path):
             path = os.path.dirname(path)
         return path
-    return os.path.dirname(os.path.abspath(steam_paths.BLENDER))
+    env_b = os.environ.get("AC2RF2_BLENDER")
+    if env_b:
+        path = os.path.abspath(env_b)
+        return os.path.dirname(path) if os.path.isfile(path) else path
+    which_b = shutil.which("blender")
+    if which_b:
+        candidates.append(os.path.dirname(os.path.abspath(which_b)))
+    for pf in _program_files_dirs():
+        candidates.append(os.path.join(pf, "Blender Foundation", "Blender 3.6"))
+    if fallback_dist:
+        candidates.append(os.path.join(fallback_dist, "blender"))
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "blender.exe")):
+            return path
+    return candidates[0] if candidates else ""
 
 
 def find_addon_dir(blender_dir, explicit):
@@ -173,8 +197,15 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     dist_dir = os.path.abspath(args.dist)
-    blender_src = find_blender_dir(args.blender)
-    addon_src = find_addon_dir(blender_src, args.addon)
+    default_dist = os.path.abspath(os.path.join(HERE, "dist"))
+    fallback_dist = (
+        default_dist
+        if os.path.normcase(dist_dir) != os.path.normcase(default_dist)
+        and os.path.isdir(default_dist)
+        else None
+    )
+    blender_src = find_blender_dir(args.blender, fallback_dist=fallback_dist)
+    addon_src = find_addon_dir(blender_src, args.addon) if blender_src else ""
 
     for label, path, check in (
         ("Blender", os.path.join(blender_src, "blender.exe"), os.path.isfile),

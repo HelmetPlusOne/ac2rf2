@@ -94,10 +94,12 @@ def check_track(rep, track_dir, layout):
     rep.ok("track %s" % name)
 
 
-def check_blender(rep, blender):
-    if not os.path.isfile(blender):
-        rep.problem("Blender not found at %s" % blender,
-                    "Install Blender 3.6 LTS, or pass --blender \"<path to blender.exe>\"")
+def check_blender(rep, blender, dist_hint=None):
+    if not blender or not os.path.isfile(blender):
+        rep.problem(
+            "Blender not found at %s" % blender,
+            dist_hint or "Run 'python build_dist.py' first, or pass --blender \"<path to blender.exe>\"",
+        )
         return
     try:
         r = subprocess.run([blender, "--background", "--factory-startup",
@@ -223,7 +225,13 @@ def check(track_dir=None, layout=None, blender=None, install=None,
         check_track(rep, os.path.abspath(track_dir), layout)
 
     if need_blender:
-        check_blender(rep, blender)
+        dist_hint = (
+            "Ensure the dist folder is complete (missing bundled blender\\blender.exe)."
+            if steam_paths.IS_STANDALONE
+            else "Run 'python build_dist.py' first to bundle Blender into %s, or pass --blender \"<path to blender.exe>\"."
+            % steam_paths.TOOLS_ROOT
+        )
+        check_blender(rep, blender or steam_paths.BLENDER, dist_hint=dist_hint)
 
     free = shutil.disk_usage(HERE).free / 1e9
     if free < MIN_FREE_GB:
@@ -249,13 +257,12 @@ def main():
         os.environ["AC2RF2_RF2_DIR"] = os.path.abspath(args.rf2)
     if args.ac:
         os.environ["AC2RF2_AC_DIR"] = os.path.abspath(args.ac)
-    if not args.blender:
-        from build_track import BLENDER
-        args.blender = BLENDER
     import track_zip
     if args.track_dir and track_zip.is_zip(args.track_dir):
         args.track_dir = track_zip.extract(args.track_dir)
     import steam_paths
+    if not args.blender:
+        args.blender = steam_paths.BLENDER
     ok = check(args.track_dir, args.layout, args.blender, steam_paths.LOCATIONS)
     if ok:
         print("\nall good")
