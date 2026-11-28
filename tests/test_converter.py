@@ -1058,6 +1058,30 @@ class Kn5Tests(unittest.TestCase):
             self.assertFalse(any(rx.match("night_only_mesh") for rx in mesh_rx))
             self.assertFalse(any(rx.match("1ROAD100") for rx in mesh_rx))
 
+    def test_build_dist_release_archive_packaging(self):
+        import datetime
+        import types
+        import build_dist
+        import sha256sum
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rel_dir = build_dist.release_dist_dir(tmp, today=datetime.date(2026, 11, 28))
+            self.assertEqual(rel_dir, os.path.join(tmp, "ac2rf2_20261128"))
+            os.makedirs(rel_dir)
+
+            def fake_7z(cmd, cwd=None):
+                with open(os.path.join(cwd, cmd[2]), "wb") as fh:
+                    fh.write(b"fake-7z-payload")
+                return types.SimpleNamespace(returncode=0)
+
+            with mock.patch.object(build_dist.subprocess, "run", side_effect=fake_7z):
+                archive_path, checksum_path, digest = build_dist.create_release_archive(rel_dir, "7z.exe")
+            self.assertEqual(archive_path, os.path.join(tmp, "ac2rf2_20261128.7z"))
+            self.assertEqual(checksum_path, os.path.join(tmp, "ac2rf2_20261128.7z.sha256.txt"))
+            self.assertEqual(digest, sha256sum.sha256_file(archive_path))
+            with open(checksum_path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "%s  ac2rf2_20261128.7z\n" % digest)
+
 
 if __name__ == "__main__":
     unittest.main()

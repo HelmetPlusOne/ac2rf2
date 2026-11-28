@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 *.log
 probe_ck/
+build_release.bat
