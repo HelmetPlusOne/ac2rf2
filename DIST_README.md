@@ -8,6 +8,7 @@ Converted tracks are automatically packaged into MAS archives and an `.rfcmp` co
 
 ### TBD
 
+- **CSP hidden mesh support (`ext_config.ini`)**: Honors unconditional CSP `[MESH_ADJUSTMENT]` rules with `IS_RENDERABLE = 0` / `IS_VISIBLE = 0` / `IS_ACTIVE = 0` (including layout-specific `ext_config.ini`), preventing invisible physics overlays and replaced 2D crowd placeholders (e.g. Sebring 60s) from rendering visibly while keeping collision intact.
 - **Portable dist-local Blender paths**: Removed hardcoded local Blender paths (`D:\Apps\Blender\blender.exe`), made `dist` builds always resolve bundled Blender locally (with direct Python runs resolving Blender from `<script_path>/dist/blender/`), and updated `build_dist.py` to discover Blender via `--blender`, `AC2RF2_BLENDER`, `PATH`, Program Files, or an existing `dist/`.
 - **Disable HAT on vertical collision barriers**: Sets `HATTarget=False` (keeping `CollTarget=True`) on vertical barriers (`1WALL*`, guardrails, tyrewalls) in `.scn` files so walls never act as fake drivable ground or bloat rF2's HAT structure.
 

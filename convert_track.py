@@ -498,13 +498,81 @@ def surfaces_under_rubber(rows, points, reach=1.5, height=0.3, share=0.08):
     return {m for m, n in votes.items() if n / float(cast) >= share}
 
 
-def csp_config_paths(track_dir, ac_root):
+def csp_config_paths(track_dir, ac_root, layout_root=None):
     """The CSP config files that exist for this track."""
-    track = os.path.basename(os.path.abspath(track_dir).rstrip("\/"))
+    track = os.path.basename(os.path.abspath(track_dir).rstrip("\\/"))
     paths = [os.path.join(ac_root, "extension", "config", "tracks", "loaded", track + ".ini"),
              os.path.join(ac_root, "extension", "config", "tracks", track + ".ini"),
              os.path.join(track_dir, "extension", "ext_config.ini")]
+    if layout_root and os.path.normcase(os.path.abspath(layout_root)) != os.path.normcase(os.path.abspath(track_dir)):
+        paths.append(os.path.join(layout_root, "extension", "ext_config.ini"))
     return [p for p in paths if os.path.exists(p)]
+
+
+def _compile_csp_pattern(token):
+    """Compile a CSP name pattern (``?`` / ``*`` wildcards) to a case-insensitive regex."""
+    return re.compile(
+        "^" + re.escape(token).replace(r"\?", ".*").replace(r"\*", ".*") + "$",
+        re.I,
+    )
+
+
+def csp_hidden_meshes(track_dir, ac_root, layout_root=None):
+    """Return ``(mesh_regexes, material_regexes)`` unconditionally hidden by CSP.
+
+    Many AC mods leave placeholder/physics-bump meshes (e.g. bright pink road
+    bumps or replaced 2D crowd billboards) visible in the KN5 and hide them at
+    runtime via ``[MESH_ADJUSTMENT_...]`` blocks with ``IS_RENDERABLE = 0``
+    (or ``IS_VISIBLE = 0`` / ``IS_ACTIVE = 0``) in ``extension/ext_config.ini``.
+    Conditional blocks (with ``CONDITION = ...``) and disabled blocks
+    (``ACTIVE = 0``) are ignored.
+    """
+    blocks = []
+    cur = None
+    for path in csp_config_paths(track_dir, ac_root, layout_root=layout_root):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.split(";")[0].strip()
+                if not line:
+                    continue
+                if line.startswith("["):
+                    head = line.upper()
+                    cur = {} if head.startswith("[MESH_ADJUSTMENT") else None
+                    if cur is not None:
+                        blocks.append(cur)
+                    continue
+                if cur is not None and "=" in line:
+                    k, v = line.split("=", 1)
+                    key = k.strip().upper()
+                    val = v.strip()
+                    if key in ("MESHES", "MATERIALS") and key in cur:
+                        cur[key] = cur[key] + "," + val
+                    else:
+                        cur[key] = val
+
+    mesh_pats = []
+    mat_pats = []
+    off_vals = {"0", "false", "no", "off"}
+    for b in blocks:
+        if b.get("ACTIVE", "1").strip().lower() in off_vals:
+            continue
+        if b.get("CONDITION", "").strip():
+            continue
+        hidden = any(
+            b.get(flag, "").strip().lower() in off_vals
+            for flag in ("IS_RENDERABLE", "IS_VISIBLE", "IS_ACTIVE")
+        )
+        if not hidden:
+            continue
+        for tok in b.get("MESHES", "").split(","):
+            tok = tok.strip()
+            if tok and not tok.startswith("{") and ":" not in tok:
+                mesh_pats.append(_compile_csp_pattern(tok))
+        for tok in b.get("MATERIALS", "").split(","):
+            tok = tok.strip()
+            if tok and not tok.startswith("{") and ":" not in tok:
+                mat_pats.append(_compile_csp_pattern(tok))
+    return mesh_pats, mat_pats
 
 
 def csp_grass_fx(track_dir, ac_root):
@@ -1194,6 +1262,10 @@ def main():
 
     alpha = texture_alpha_stats(kn5_paths)
     tex_names = texture_filenames(sorted(alpha))
+    hidden_mesh_rx, hidden_mat_rx = csp_hidden_meshes(
+        track_dir, args.ac_root, layout_root=layout_root
+    )
+    csp_hidden_count = 0
 
     variants = OrderedDict()
     mesh_rows = []
@@ -1223,6 +1295,13 @@ def main():
             else:
                 rf2_mat = materials.rf2_name(mat_key, mat.name)
             variants[(mat_key, key)] = rf2_mat
+            csp_hidden = (
+                any(rx.match(n.name) for rx in hidden_mesh_rx)
+                or any(rx.match(mat.name) for rx in hidden_mat_rx)
+            )
+            base_render = bool(n.visible and n.renderable) and not n.name.upper().startswith("AC_")
+            if base_render and csp_hidden:
+                csp_hidden_count += 1
             mesh_rows.append({
                 "mesh": n.name,
                 # Which mesh this is: its file (index into "kn5") and its
@@ -1245,8 +1324,7 @@ def main():
                 "rf2_material": rf2_mat,
                 "tris": n.index_count // 3,
                 "transparent": bool(mat.blend),
-                "render": bool(n.visible and n.renderable)
-                          and not n.name.upper().startswith("AC_"),
+                "render": base_render and not csp_hidden,
                 "alpha_test": bool(mat.alpha_tested),
                 # AC's per-mesh flag; the scene file makes these shadow casters.
                 "cast_shadows": bool(n.cast_shadows),
@@ -1291,6 +1369,9 @@ def main():
                 "textures": mat.textures,
                 "props": carried_props(mat),
             })
+
+    if csp_hidden_count:
+        print("csp hidden: %d mesh(es) via ext_config.ini [MESH_ADJUSTMENT]" % csp_hidden_count)
 
     # How much UV a metre of track covers, per material. A texture only looks
     # sharp if enough of its texels land on each metre, and AC maps some

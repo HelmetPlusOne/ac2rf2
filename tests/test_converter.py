@@ -1025,6 +1025,39 @@ class Kn5Tests(unittest.TestCase):
                 found = build_dist.find_blender_dir(None, fallback_dist=dist_root)
             self.assertEqual(os.path.abspath(found), os.path.abspath(blender_dir))
 
+    def test_csp_hidden_meshes_reads_ext_config_is_renderable_zero(self):
+        import convert_track
+
+        with tempfile.TemporaryDirectory() as tmp:
+            track_dir = os.path.join(tmp, "sebring_test")
+            ext_dir = os.path.join(track_dir, "extension")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "ext_config.ini"), "w", encoding="utf-8") as f:
+                f.write(
+                    "[MESH_ADJUSTMENT_...]\n"
+                    "MESHES = crowd_sit0, OBJ5_SUB0\n"
+                    "IS_RENDERABLE = 0\n\n"
+                    "[MESH_ADJUSTMENT_...]\n"
+                    "MESHES = 1ROAD14?\n"
+                    "IS_VISIBLE = false\n\n"
+                    "[MESH_ADJUSTMENT_...]\n"
+                    "ACTIVE = 0\n"
+                    "MESHES = disabled_mesh\n"
+                    "IS_RENDERABLE = 0\n\n"
+                    "[MESH_ADJUSTMENT_...]\n"
+                    "CONDITION = NIGHT_SMOOTH\n"
+                    "MESHES = night_only_mesh\n"
+                    "IS_RENDERABLE = 0\n"
+                )
+            mesh_rx, mat_rx = convert_track.csp_hidden_meshes(track_dir, tmp)
+            self.assertEqual(mat_rx, [])
+            self.assertTrue(any(rx.match("crowd_sit0") for rx in mesh_rx))
+            self.assertTrue(any(rx.match("obj5_sub0") for rx in mesh_rx))
+            self.assertTrue(any(rx.match("1ROAD149") for rx in mesh_rx))
+            self.assertFalse(any(rx.match("disabled_mesh") for rx in mesh_rx))
+            self.assertFalse(any(rx.match("night_only_mesh") for rx in mesh_rx))
+            self.assertFalse(any(rx.match("1ROAD100") for rx in mesh_rx))
+
 
 if __name__ == "__main__":
     unittest.main()
