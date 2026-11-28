@@ -218,7 +218,45 @@ def resample_line(pts, spacing):
     return out, total
 
 
-def collect(k, valid_keys=None, road=None, solid=None):
+def _marker_sort_key(item):
+    tail = item[2].rsplit("_", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
+
+
+def fallback_grid_starts(starts, pits=(), hotlaps=(), wps=(), max_wp_spots=8):
+    """Ensure [GRID] and [TELEPORT] always have spawn entries.
+
+    Point-to-point AC tracks (e.g. touge/drift stages) frequently omit
+    AC_START_* markers and only define AC_PIT_* or AC_HOTLAP_START_* dummies.
+    rF2 crashes or fails to spawn when an AIW's [GRID]/[TELEPORT] sections are empty.
+    """
+    if starts:
+        return list(starts), None
+    if pits:
+        return list(pits), "AC_PIT"
+    if hotlaps:
+        return list(hotlaps), "AC_HOTLAP_START"
+    if not wps:
+        return [], None
+
+    n = len(wps)
+    step = max(1, int(round(8.0 / SPACING)))
+    count = min(max_wp_spots, max(1, n // step))
+    generated = []
+    for k in range(count):
+        idx = (-k * step) % n
+        x, y, z, _half = wps[idx]
+        if n > 1:
+            nx, _, nz, _ = wps[(idx + 1) % n]
+            fx, fz = nx - x, nz - z
+            yaw = math.atan2(fx, fz) if math.hypot(fx, fz) > 1e-6 else 0.0
+        else:
+            yaw = 0.0
+        generated.append(((x, y, z), yaw, "WP_START_%d" % k))
+    return generated, "waypoints"
+
+
+def collect(k, valid_keys=None, road=None, solid=None, hotlaps=None):
     """Split the model into spawn markers, collidable surfaces and drivable ones.
 
     Which surfaces count as drivable comes from AC's own surfaces file, where
@@ -236,6 +274,9 @@ def collect(k, valid_keys=None, road=None, solid=None):
             elif n.name.startswith("AC_PIT"):
                 m = world_matrix(n)
                 pits.append(((m[12], m[13], m[14]), yaw_of(m), n.name))
+            elif hotlaps is not None and n.name.startswith("AC_HOTLAP_START"):
+                m = world_matrix(n)
+                hotlaps.append(((m[12], m[13], m[14]), yaw_of(m), n.name))
         elif n.type in (2, 3) and n.vertex_count:
             up = n.name.upper()
             if not up[:1].isdigit():
@@ -252,12 +293,10 @@ def collect(k, valid_keys=None, road=None, solid=None):
                 if drivable:
                     road.extend(records)
 
-    def order(item):
-        tail = item[2].rsplit("_", 1)[-1]
-        return int(tail) if tail.isdigit() else 0
-
-    starts.sort(key=order)
-    pits.sort(key=order)
+    starts.sort(key=_marker_sort_key)
+    pits.sort(key=_marker_sort_key)
+    if hotlaps is not None:
+        hotlaps.sort(key=_marker_sort_key)
     return starts, pits, road, solid
 
 
@@ -910,7 +949,7 @@ def build(track_dir, out_path, layout):
     valid = {convert_track.key_stem(key) for key, info in surf.items()
              if info["valid"]} - {""}
     print("drivable surface keys: %s" % ", ".join(sorted(valid)))
-    starts, pits = [], []
+    starts, pits, hotlaps = [], [], []
     road, solid = TriangleBuffer(), TriangleBuffer()
     for path in paths:
         _memory_log(diagnostics, "model collection start",
@@ -918,9 +957,11 @@ def build(track_dir, out_path, layout):
                                            os.path.getsize(path)))
         k = KN5(path, geometry=True, placement=placed.get(path))
         solid_before, road_before = len(solid), len(road)
-        st, pt, _rd, _sd = collect(k, valid, road, solid)
+        hl = []
+        st, pt, _rd, _sd = collect(k, valid, road, solid, hotlaps=hl)
         starts += st
         pits += pt
+        hotlaps += hl
         del k
         gc.collect()
         _memory_log(
@@ -928,15 +969,21 @@ def build(track_dir, out_path, layout):
             "file=%s solid_triangles=%d road_triangles=%d" %
             (os.path.basename(path), len(solid) - solid_before,
              len(road) - road_before))
-    starts.sort(key=lambda i: int(i[2].rsplit("_", 1)[-1])
-                if i[2].rsplit("_", 1)[-1].isdigit() else 0)
-    pits.sort(key=lambda i: int(i[2].rsplit("_", 1)[-1])
-              if i[2].rsplit("_", 1)[-1].isdigit() else 0)
+    starts.sort(key=_marker_sort_key)
+    pits.sort(key=_marker_sort_key)
+    hotlaps.sort(key=_marker_sort_key)
 
     # Mirror once, here, so the grid, pit lane, widths and sector polys are all
     # built in the same space the meshes are exported into.
     starts = [(mirror_pos(p), mirror_yaw(y), n) for p, y, n in starts]
     pits = [(mirror_pos(p), mirror_yaw(y), n) for p, y, n in pits]
+    hotlaps = [(mirror_pos(p), mirror_yaw(y), n) for p, y, n in hotlaps]
+
+    if not starts:
+        starts, fb_src = fallback_grid_starts(starts, pits=pits, hotlaps=hotlaps)
+        if fb_src:
+            print("no AC_START markers found; using %d %s marker(s) as starting grid"
+                  % (len(starts), fb_src))
 
     if not road:
         raise SystemExit("no ROAD meshes found, cannot fit a path")
@@ -959,6 +1006,11 @@ def build(track_dir, out_path, layout):
         loop, grid = fit_loop(road, seed=starts[0][0] if starts else None,
                               diagnostics=diagnostics)
         wps, length = resample(loop)
+    if not starts:
+        starts, fb_src = fallback_grid_starts(starts, wps=wps)
+        if fb_src:
+            print("no AC_START/AC_PIT/AC_HOTLAP_START markers found; "
+                  "synthesized %d grid spot(s) from waypoints" % len(starts))
     n = len(wps)
     print("grid %d, pits %d, road triangles %d" % (len(starts), len(pits), len(road)))
     print("path %d waypoints, %.1f m around" % (n, length))
@@ -1002,7 +1054,7 @@ def build(track_dir, out_path, layout):
         pit_boxes, pit_garages = pl["boxes"], pl["garages"]
     else:
         print("!! no pit lane could be placed, falling back to AC pit dummies")
-        pit_boxes = [(p[0], p[1], p[2], y) for p, y, _nm in pits]
+        pit_boxes = [(p[0], p[1], p[2], y) for p, y, _nm in (pits or starts)]
         pit_garages = pit_boxes
     # Practice starts in the garage. Built behind AC's pit boxes, the garages
     # landed somewhere AC never spawns a car, inside buildings or off a pit

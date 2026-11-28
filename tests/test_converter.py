@@ -1082,6 +1082,108 @@ class Kn5Tests(unittest.TestCase):
             with open(checksum_path, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "%s  ac2rf2_20261128.7z\n" % digest)
 
+    def test_make_aiw_fallback_grid_starts(self):
+        import types
+        import make_aiw
+
+        st = [((1.0, 0.0, 2.0), 0.1, "AC_START_0")]
+        pt = [((3.0, 0.0, 4.0), 0.2, "AC_PIT_0"), ((5.0, 0.0, 6.0), 0.2, "AC_PIT_1")]
+        hl = [((7.0, 0.0, 8.0), 0.3, "AC_HOTLAP_START_0")]
+        wps = [(0.0, 0.0, float(i * 5), 6.0) for i in range(20)]
+
+        # 1. Explicit AC_START wins when present.
+        got, src = make_aiw.fallback_grid_starts(st, pits=pt, hotlaps=hl, wps=wps)
+        self.assertIsNone(src)
+        self.assertEqual(got, st)
+
+        # 2. Missing AC_START falls back to AC_PIT (e.g. touge/drift tracks).
+        got, src = make_aiw.fallback_grid_starts([], pits=pt, hotlaps=hl, wps=wps)
+        self.assertEqual(src, "AC_PIT")
+        self.assertEqual(got, pt)
+
+        # 3. Missing AC_START and AC_PIT falls back to AC_HOTLAP_START.
+        got, src = make_aiw.fallback_grid_starts([], pits=[], hotlaps=hl, wps=wps)
+        self.assertEqual(src, "AC_HOTLAP_START")
+        self.assertEqual(got, hl)
+
+        # 4. Missing all markers synthesizes grid spots along waypoints.
+        got, src = make_aiw.fallback_grid_starts([], pits=[], hotlaps=[], wps=wps)
+        self.assertEqual(src, "waypoints")
+        self.assertEqual(len(got), 8)
+        self.assertEqual(got[0][0], (0.0, 0.0, 0.0))
+
+        # 5. collect() captures AC_HOTLAP_START when hotlaps list is provided.
+        ident = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10.0, 2.0, 30.0, 1]
+        node_pit = types.SimpleNamespace(type=1, name="AC_PIT_0", matrix=ident, parent=None, vertex_count=0)
+        node_hl = types.SimpleNamespace(type=1, name="AC_HOTLAP_START_0", matrix=ident, parent=None, vertex_count=0)
+        fake_kn5 = types.SimpleNamespace(walk=lambda: [node_pit, node_hl])
+        collected_hl = []
+        s_out, p_out, _r, _s = make_aiw.collect(fake_kn5, hotlaps=collected_hl)
+        self.assertEqual(s_out, [])
+        self.assertEqual(len(p_out), 1)
+        self.assertEqual(len(collected_hl), 1)
+        self.assertEqual(collected_hl[0][2], "AC_HOTLAP_START_0")
+
+    def test_node_is_renderable_and_venue_dir_name_cap(self):
+        import convert_track
+        import finalize_track
+        import kn5
+
+        placement = kn5.Node()
+        placement.name = "__placement__"
+        self.assertEqual(placement.active, 1)
+
+        root = kn5.Node()
+        root.name = "root"
+        root.parent = placement
+
+        road_vis = kn5.Node()
+        road_vis.name = "polySurface10_SUB0"
+        road_vis.visible = 1
+        road_vis.renderable = 1
+        road_vis.active = 1
+        road_vis.parent = root
+        self.assertTrue(convert_track.node_is_renderable(road_vis))
+
+        # Invisible AC physics meshes (1ROAD/1WALL) often use active=0 with visible=1, renderable=1.
+        phys_road = kn5.Node()
+        phys_road.name = "1ROAD"
+        phys_road.visible = 1
+        phys_road.renderable = 1
+        phys_road.active = 0
+        phys_road.parent = root
+        self.assertFalse(convert_track.node_is_renderable(phys_road))
+
+        # Inactive ancestor hides child meshes.
+        hidden_group = kn5.Node()
+        hidden_group.name = "hidden_colliders"
+        hidden_group.active = 0
+        hidden_group.parent = root
+        child = kn5.Node()
+        child.name = "1WALL"
+        child.visible = 1
+        child.renderable = 1
+        child.active = 1
+        child.parent = hidden_group
+        self.assertFalse(convert_track.node_is_renderable(child))
+
+        # AC_* marker nodes remain non-renderable.
+        marker = kn5.Node()
+        marker.name = "AC_PIT_0"
+        marker.visible = 1
+        marker.renderable = 1
+        marker.active = 1
+        marker.parent = root
+        self.assertFalse(convert_track.node_is_renderable(marker))
+
+        # venue_dir_name keeps short names intact and caps >32-char names deterministically.
+        self.assertEqual(finalize_track.venue_dir_name("santa_monica_mtns_a_stuntRace"), "santa_monica_mtns_a_stuntRace")
+        long_name = "very_long_assetto_corsa_track_folder_name_extra_layout"
+        capped = finalize_track.venue_dir_name(long_name)
+        self.assertLessEqual(len(capped), finalize_track.MAX_VENUE_DIR_LENGTH)
+        self.assertEqual(capped, finalize_track.venue_dir_name(long_name))
+        self.assertNotEqual(capped, finalize_track.venue_dir_name(long_name + "_2"))
+
 
 if __name__ == "__main__":
     unittest.main()

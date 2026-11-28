@@ -50,6 +50,7 @@ class Node:
                  'visible', 'transparent', 'renderable',
                  '_verts', '_uvs', '_normals', '_indices', 'raw')
     def __init__(self):
+        self.active = 1
         self.children = []
         self.parent = None
         self.matrix = None

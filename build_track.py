@@ -423,15 +423,17 @@ def main():
         cmd += ["--install", args.install]
     run(cmd)
 
+    import finalize_track
+    vdir = finalize_track.venue_dir_name(track)
     if args.install:
-        lay = os.path.join(args.install, track, track)
+        lay = os.path.join(args.install, vdir, vdir)
         for f in os.listdir(lay) if os.path.isdir(lay) else []:
             if f.lower().endswith((".cbash", ".rrshd")):
                 os.remove(os.path.join(lay, f))
     if args.package:
         step(8, "package into MAS and RFCMP")
         import package_rfcmp
-        rf2_stage = os.path.join(out, "rf2", track)
+        rf2_stage = os.path.join(out, "rf2", vdir)
         target_dir = os.path.join(steam_paths.APP_DIR, "out") if steam_paths.IS_STANDALONE else out
         package_rfcmp.package_track(rf2_stage, output_rfcmp=target_dir)
 

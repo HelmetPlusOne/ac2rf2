@@ -8,6 +8,9 @@ Converted tracks are automatically packaged into MAS archives and an `.rfcmp` co
 
 ### TBD
 
+- **AIW `[GRID]`/`[TELEPORT]` fallback for tracks without `AC_START_*`**: Falls back to `AC_PIT_*`, `AC_HOTLAP_START_*`, or synthesized waypoint spots when an AC track omits `AC_START_*` markers (e.g. point-to-point touge/drift stages), preventing rF2 load/spawn failures from empty grid/teleport sections.
+- **rF2 location folder name length cap**: Caps staged/installed `Locations/<dir>` folder names at 32 characters (with a deterministic hash suffix when longer) so relative `.scn`, `.tdf`, and loading-screen paths stay within gMotor path buffers.
+- **KN5 `active=0` invisible mesh handling**: Honors each KN5 node's `active` flag (and inactive ancestor nodes) when deciding renderability, keeping invisible physics colliders (`1ROAD`/`1WALL` with `NULL.dds` or solid placeholder textures) collidable with `Render=False`.
 - **Release `.7z` archive packaging (`--release`)**: Added `--release` (and `--7z`) to `build_dist.py` to build into `./ac2rf2_YYYYMMDD`, compress into `.7z`, and generate `.7z.sha256.txt` automatically.
 - **CSP hidden mesh support (`ext_config.ini`)**: Honors unconditional CSP `[MESH_ADJUSTMENT]` rules with `IS_RENDERABLE = 0` / `IS_VISIBLE = 0` / `IS_ACTIVE = 0` (including layout-specific `ext_config.ini`), preventing invisible physics overlays and replaced 2D crowd placeholders (e.g. Sebring 60s) from rendering visibly while keeping collision intact.
 - **Portable dist-local Blender paths**: Removed hardcoded local Blender paths (`D:\Apps\Blender\blender.exe`), made `dist` builds always resolve bundled Blender locally (with direct Python runs resolving Blender from `<script_path>/dist/blender/`), and updated `build_dist.py` to discover Blender via `--blender`, `AC2RF2_BLENDER`, `PATH`, Program Files, or an existing `dist/`.

@@ -24,8 +24,21 @@ import tempfile
 import subprocess
 
 MAX_INSTANCE_NAME_LENGTH = 31
+# Cap staged/installed Locations/<dir> folder names at 32 chars so relative
+# gMotor track, loading-screen, and terrain paths stay within fixed buffers.
+MAX_VENUE_DIR_LENGTH = 32
 BARRIER_MAT_PREFIXES = ("wall_", "twal_", "twall_", "grdr_", "safer_", "cwal_", "cmwl_", "cema_")
 BARRIER_SURFACE_KEYS = ("WALL", "TYREWALL", "GUARDRAIL", "SAFER")
+
+
+def venue_dir_name(venue):
+    """Keep rF2 Locations/<dir> folder names short enough for gMotor path buffers."""
+    clean = re.sub(r"\s+", "_", (venue or "").strip()) or "track"
+    if len(clean) <= MAX_VENUE_DIR_LENGTH:
+        return clean
+    suffix = hashlib.sha1(clean.casefold().encode("utf-8")).hexdigest()[:8]
+    prefix = clean[:MAX_VENUE_DIR_LENGTH - 9].rstrip("_-.") or "track"
+    return "%s_%s" % (prefix, suffix)
 
 
 def _surface_stem(row):
@@ -77,12 +90,12 @@ def instance_identifier(name, used=None):
 SCN_HEADER = """CUBEASF
 // {layout}, converted from Assetto Corsa
 
-MaterialPath={venue}\\Assets\\Materials
+MaterialPath={venue_dir}\\Assets\\Materials
 SearchPath=.
-SearchPath={venue}
-SearchPath={venue}\\{layout}
-SearchPath={venue}\\Assets\\GMTs
-SearchPath={venue}\\Assets\\MAPs
+SearchPath={venue_dir}
+SearchPath={venue_dir}\\{layout_dir}
+SearchPath={venue_dir}\\Assets\\GMTs
+SearchPath={venue_dir}\\Assets\\MAPs
 
 MASFile=Commonmaps.MAS
 
@@ -139,7 +152,7 @@ ReflectionMapper=REFMAP0
 
 """
 
-GDB = r"""{layout}
+GDB = r"""{layout_dir}
 {{
   Filter Properties = StockV8 Historic Modern rFRS TMOD
   Attrition = 30
@@ -150,7 +163,7 @@ GDB = r"""{layout}
   Location = converted from Assetto Corsa
   Length = {km:.3f} KM / {mi:.2f} Miles
   TrackType = Road Course
-  TerrainDataFile = ..\{venue}.tdf
+  TerrainDataFile = ..\{venue_dir}.tdf
   HeadlightsRequired = false
   FormationAndStart = 0
   GarageDepth = 3.5
@@ -536,6 +549,8 @@ def main():
     out_dir = os.path.abspath(args.out_dir)
     venue = os.path.basename(out_dir)
     layout = venue
+    venue_dir = venue_dir_name(venue)
+    layout_dir = venue_dir
     gmt_dir = os.path.join(out_dir, "gmt")
     exported = json.load(open(os.path.join(gmt_dir, "exported.json")))
 
@@ -566,10 +581,10 @@ def main():
             else:
                 row["_meta"] = None
 
-    stage = os.path.join(out_dir, "rf2", venue)
+    stage = os.path.join(out_dir, "rf2", venue_dir)
     if os.path.isdir(stage):
         shutil.rmtree(stage)
-    lay_dir = os.path.join(stage, layout)
+    lay_dir = os.path.join(stage, layout_dir)
     gmts = os.path.join(stage, "Assets", "GMTs")
     maps = os.path.join(stage, "Assets", "MAPs")
     for d in (lay_dir, gmts, maps, os.path.join(stage, "Assets", "Materials")):
@@ -605,7 +620,8 @@ def main():
     exported.sort(key=lambda r: (bool(r.get("blend")), -float(r.get("radius", 0.0))))
 
     sx, sy, sz = sun_direction(out_dir)
-    lines = [SCN_HEADER.format(venue=venue, layout=layout, cx=cx, cy=cy, cz=cz,
+    lines = [SCN_HEADER.format(venue=venue, layout=layout, venue_dir=venue_dir,
+                               layout_dir=layout_dir, cx=cx, cy=cy, cz=cz,
                                amb=args.ambient, sun=args.sun,
                                sx=sx, sy=sy, sz=sz)]
     used_instances = {"skyboxi", "clouds", "sky", "xpitin", "xpitout"}
@@ -645,22 +661,23 @@ def main():
             extra += " ShadowCaster=(Static, %s)" % row["shadow"]
         lines.append("Instance=%s\n{\n  MeshFile=%s CollTarget=%s HATTarget=%s%s\n}\n"
                      % (name, row["gmt"], coll, hat, extra))
-    write(os.path.join(lay_dir, layout + ".scn"), "\n".join(lines))
-    write(os.path.join(lay_dir, layout + ".gdb"),
-          GDB.format(venue=venue, layout=layout, km=lap_km,
+    write(os.path.join(lay_dir, layout_dir + ".scn"), "\n".join(lines))
+    write(os.path.join(lay_dir, layout_dir + ".gdb"),
+          GDB.format(venue=venue, layout=layout, venue_dir=venue_dir,
+                     layout_dir=layout_dir, km=lap_km,
                      mi=lap_km * 0.621371, hour=args.hour))
-    menu_images = stage_menu_images(args.preview, lay_dir, layout, args.texconv)
+    menu_images = stage_menu_images(args.preview, lay_dir, layout_dir, args.texconv)
     if menu_images:
         print("  menu images %d (thumbnail and loading screen)" % menu_images)
 
     tdf = os.path.join(out_dir, venue + ".tdf")
     if os.path.exists(tdf):
-        shutil.copy2(tdf, os.path.join(stage, venue + ".tdf"))
+        shutil.copy2(tdf, os.path.join(stage, venue_dir + ".tdf"))
 
     aiw = os.path.join(out_dir, venue + ".AIW")
     has_aiw = os.path.exists(aiw)
     if has_aiw:
-        shutil.copy2(aiw, os.path.join(lay_dir, layout + ".AIW"))
+        shutil.copy2(aiw, os.path.join(lay_dir, layout_dir + ".AIW"))
 
     import gmt_dedup
     wanted = {r["gmt"].lower() for r in exported}
@@ -721,16 +738,16 @@ def main():
 
     cam = os.path.join(out_dir, venue + ".cam")
     if os.path.exists(cam):
-        shutil.copy2(cam, os.path.join(lay_dir, layout + ".cam"))
+        shutil.copy2(cam, os.path.join(lay_dir, layout_dir + ".cam"))
         print("  cameras     converted from AC")
     elif args.install:
         fallback = os.path.join(args.install, "default.cam")
         if os.path.exists(fallback):
-            shutil.copy2(fallback, os.path.join(lay_dir, layout + ".cam"))
+            shutil.copy2(fallback, os.path.join(lay_dir, layout_dir + ".cam"))
             print("  cameras     placeholder (default.cam)")
 
     if args.install:
-        dest = os.path.join(args.install, venue)
+        dest = os.path.join(args.install, venue_dir)
         try:
             if os.path.isdir(dest):
                 shutil.rmtree(dest)
